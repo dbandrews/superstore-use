@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing
 
 from browser_use import Agent, Browser, ChatOpenAI
 from dotenv import load_dotenv
@@ -45,43 +46,53 @@ def collect_items_from_user() -> list[str]:
     return items
 
 
+def add_single_item_process(args: tuple[str, int, int]) -> str:
+    """Worker function to add a single item in a separate process."""
+    item, index, total = args
+
+    async def _add_item():
+        print(f"\n🔍 [{index}/{total}] Adding: {item}")
+
+        browser = create_browser()
+
+        try:
+            agent = Agent(
+                task=f"Go to https://www.realcanadiansuperstore.ca, search for {item} and add it to the cart",
+                llm=ChatOpenAI(model="gpt-4.1"),
+                browser_session=browser,
+            )
+            await agent.run(max_steps=50)
+            print(f"✅ [{index}/{total}] Added: {item}")
+            return f"success: {item}"
+        except Exception as e:
+            print(f"❌ [{index}/{total}] Failed to add {item}: {e}")
+            return f"failed: {item}"
+        finally:
+            await browser.kill()
+
+    return asyncio.run(_add_item())
+
+
 async def add_items_to_cart(items: list[str]):
-    """Adds all items to cart using a persistent browser session."""
-    print(f"\n🚀 Adding {len(items)} items to cart...")
+    """Adds all items to cart using parallel processes."""
+    print(f"\n🚀 Adding {len(items)} items to cart in parallel...")
 
-    # Create a persistent browser session
-    browser = Browser(
-        headless=False,
-        window_size={"width": 500, "height": 700},
-        wait_between_actions=1.5,
-        minimum_wait_page_load_time=1.5,
-        wait_for_network_idle_page_load_time=1.5,
-        user_data_dir="./superstore-profile",
-        keep_alive=True,  # Keep browser alive between tasks
-    )
+    process_args = [(item, i, len(items)) for i, item in enumerate(items, 1)]
 
-    await browser.start()
+    # Run items in parallel processes
+    with multiprocessing.Pool(processes=min(len(items), 4)) as pool:
+        results = pool.map(add_single_item_process, process_args)
 
-    # First task: login
-    print("\n🔐 Logging in...")
-    agent = Agent(
-        task=(
-            "Go to https://www.realcanadiansuperstore.ca website"
-            # f"{os.getenv('SUPERSTORE_USER')} and password {os.getenv('SUPERSTORE_PASSWORD')}"
-        ),
-        llm=ChatOpenAI(model="gpt-4.1"),
-        browser_session=browser,
-    )
-    await agent.run(max_steps=50)
+    # Report results
+    successes = [r for r in results if r.startswith("success")]
+    failures = [r for r in results if r.startswith("failed")]
 
-    # Add each item sequentially in the same browser session
-    for i, item in enumerate(items, 1):
-        print(f"\n🔍 Adding item {i}/{len(items)}: {item}")
-        agent.add_new_task(f"Search for {item} and add it to the cart")
-        await agent.run(max_steps=50)
-        print(f"✅ Added: {item}")
+    print(f"\n✅ Added {len(successes)}/{len(items)} items to cart")
+    if failures:
+        print(f"⚠️  Failed items: {', '.join(f.replace('failed: ', '') for f in failures)}")
 
-    print("\n✅ All items have been added to the cart!")
+    # Create a fresh browser for checkout
+    browser = create_browser()
 
     return browser  # Return browser for checkout
 
@@ -113,7 +124,7 @@ async def checkout(browser: Browser):
     agent = Agent(
         task=(
             """
-        Go to the cart and proceed through the checkout process.
+        Go to the https://www.realcanadiansuperstore.ca/ and proceed through the checkout process.
         The cart option should be at top right of the main page.
 
         Navigate through all checkout steps:
