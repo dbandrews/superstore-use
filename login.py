@@ -27,16 +27,17 @@ async def login_and_save():
         minimum_wait_page_load_time=1.5,
         wait_for_network_idle_page_load_time=1.5,
         user_data_dir="./superstore-profile",  # Save browser state here
+        args=["--disable-features=LockProfileCookieDatabase"],
     )
 
     try:
         agent = Agent(
             task=f"""
-            Navigate to https://www.realcanadiansuperstore.ca/ and log in.
+            Navigate to https://www.realcanadiansuperstore.ca/en and log in.
 
             Steps:
             1. Go to the website
-            2. Click on the sign in or account button (usually in top right)
+            2. Click on "Sign in" button at top right
             3. Enter username: {username}
             4. Enter password: {password}
             5. Click the login/sign in button

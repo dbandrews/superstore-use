@@ -10,11 +10,12 @@ load_dotenv()
 def create_browser(user_data_dir: str = "./superstore-profile") -> Browser:
     return Browser(
         headless=False,  # Show browser window
-        window_size={"width": 500, "height": 700},  # Set window size
+        window_size={"width": 700, "height": 700},  # Set window size
         wait_between_actions=1.5,
         minimum_wait_page_load_time=1.5,
         wait_for_network_idle_page_load_time=1.5,
         user_data_dir=user_data_dir,  # Persist browser state (login, cart)
+        args=["--disable-features=LockProfileCookieDatabase"],
     )
 
 

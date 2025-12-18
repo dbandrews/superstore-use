@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import shutil
 import threading
 import uuid
 from typing import Optional
@@ -55,7 +54,7 @@ image = (
         "xdg-utils",
     )
     .uv_sync(uv_project_dir="./")
-    .run_commands("uvx browser-use install")
+    .run_commands("uvx playwright install chromium")
     # Copy the browser profile directory to preserve login state
     .add_local_dir(
         "./superstore-profile",
@@ -88,6 +87,7 @@ def create_browser(user_data_dir: str = "/app/superstore-profile"):
         wait_for_network_idle_page_load_time=1.5,
         user_data_dir=user_data_dir,
         proxy=proxy_settings,
+        args=["--disable-features=LockProfileCookieDatabase"],
     )
 
 
@@ -96,61 +96,60 @@ jobs = {}
 checkout_browser = None
 
 
-def add_single_item(item: str, index: int, worker_id: int) -> dict:
-    """Worker function to add a single item with its own browser profile."""
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+    ],
+    timeout=600,  # 10 minute timeout per item
+)
+def add_item_remote(item: str, index: int) -> dict:
+    """Add a single item to cart in a separate Modal container (parallelizable)."""
     from browser_use import Agent, ChatOpenAI
 
     async def _add_item():
-        # Create a unique temporary profile for this worker
-        base_profile = "/app/superstore-profile"
-        temp_profile = f"/tmp/superstore-profile-worker-{worker_id}-{os.getpid()}"
-
+        # Each container has its own isolated copy of the profile from the image
+        browser = create_browser()
         try:
-            # Copy the base profile if it exists to preserve login cookies
-            if os.path.exists(base_profile):
-                if os.path.exists(temp_profile):
-                    shutil.rmtree(temp_profile)
-                shutil.copytree(base_profile, temp_profile)
-
-            browser = create_browser(user_data_dir=temp_profile)
-            try:
-                agent = Agent(
-                    task=f"Go to https://www.realcanadiansuperstore.ca, search for {item} and add it to the cart. If you get any access denied errors, please return them.",
-                    llm=ChatOpenAI(model="gpt-4.1"),
-                    browser_session=browser,
-                )
-                await agent.run(max_steps=50)
-                return {"item": item, "index": index, "status": "success", "message": f"Added {item}"}
-            except Exception as e:
-                return {"item": item, "index": index, "status": "failed", "message": str(e)}
-            finally:
-                await browser.kill()
+            agent = Agent(
+                task=f"Go to https://www.realcanadiansuperstore.ca, search for {item} and add it to the cart. If you get any access denied errors, please return them.",
+                llm=ChatOpenAI(model="gpt-4.1"),
+                browser_session=browser,
+            )
+            await agent.run(max_steps=50)
+            return {"item": item, "index": index, "status": "success", "message": f"Added {item}"}
+        except Exception as e:
+            return {"item": item, "index": index, "status": "failed", "message": str(e)}
         finally:
-            # Clean up temp profile
-            if os.path.exists(temp_profile):
-                try:
-                    shutil.rmtree(temp_profile)
-                except Exception:
-                    pass
+            await browser.kill()
 
     return asyncio.run(_add_item())
 
 
 def run_add_items_job(job_id: str, items: list[str]):
-    """Background thread to manage adding items sequentially."""
+    """Background thread to manage adding items in parallel using Modal containers."""
     jobs[job_id]["status"] = "running"
     jobs[job_id]["total"] = len(items)
     jobs[job_id]["completed"] = 0
     jobs[job_id]["results"] = []
 
-    # Process items sequentially (parallel processes don't work well in Modal)
-    for i, item in enumerate(items, 1):
-        try:
-            result = add_single_item(item, i, i)
+    # Prepare inputs for parallel processing: (item, index) tuples
+    inputs = [(item, i) for i, item in enumerate(items, 1)]
+
+    try:
+        # Use Modal's starmap for parallel execution across separate containers
+        # order_outputs=False returns results as they complete for real-time progress updates
+        for result in add_item_remote.starmap(inputs, order_outputs=False):
             jobs[job_id]["results"].append(result)
             jobs[job_id]["completed"] += 1
-        except Exception as e:
-            jobs[job_id]["results"].append({"item": item, "status": "failed", "message": str(e)})
+    except Exception as e:
+        # Handle any errors during parallel execution
+        remaining = len(items) - jobs[job_id]["completed"]
+        for _ in range(remaining):
+            jobs[job_id]["results"].append(
+                {"item": "unknown", "status": "failed", "message": f"Parallel execution error: {str(e)}"}
+            )
             jobs[job_id]["completed"] += 1
 
     jobs[job_id]["status"] = "completed"
