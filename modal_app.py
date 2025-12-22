@@ -54,7 +54,19 @@ image = (
         "xdg-utils",
     )
     .uv_sync(uv_project_dir="./")
-    .run_commands("uvx playwright install chromium")
+    .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"})
+    .run_commands(
+        "mkdir -p /ms-playwright",
+        "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright uv run playwright install chromium",
+        # Workaround for browser-use bug: https://github.com/browser-use/browser-use/issues/3779
+        # Fixed in PR #3778 but not yet released (as of 0.11.2)
+        # Can remove once browser-use properly detects chrome-linux64/
+        """bash -c 'for dir in /ms-playwright/chromium-*/; do \
+            if [ -d "${dir}chrome-linux64" ] && [ ! -e "${dir}chrome-linux" ]; then \
+                ln -s chrome-linux64 "${dir}chrome-linux"; \
+            fi; \
+        done'""",
+    )
     # Copy the browser profile directory to preserve login state
     .add_local_dir(
         "./superstore-profile",
@@ -81,7 +93,7 @@ def create_browser(user_data_dir: str = "/app/superstore-profile"):
 
     return Browser(
         headless=True,  # Must be headless in Modal
-        window_size={"width": 500, "height": 700},
+        window_size={"width": 1500, "height": 900},
         wait_between_actions=1.5,
         minimum_wait_page_load_time=1.5,
         wait_for_network_idle_page_load_time=1.5,
@@ -103,6 +115,11 @@ checkout_browser = None
         modal.Secret.from_name("oxy-proxy"),
     ],
     timeout=600,  # 10 minute timeout per item
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "IN_DOCKER": "True",  # Required for browser-use in containers
+    },
 )
 def add_item_remote(item: str, index: int) -> dict:
     """Add a single item to cart in a separate Modal container (parallelizable)."""
@@ -251,6 +268,11 @@ def run_place_order_job(job_id: str, checkout_job_id: str):
     ],
     timeout=3600,  # 1 hour timeout for long-running shopping sessions
     allow_concurrent_inputs=100,
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "IN_DOCKER": "True",  # Required for browser-use in containers
+    },
 )
 @modal.wsgi_app()
 def flask_app():

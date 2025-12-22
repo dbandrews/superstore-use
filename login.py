@@ -22,7 +22,7 @@ async def login_and_save():
     # Create browser with persistent profile
     browser = Browser(
         headless=False,
-        window_size={"width": 1200, "height": 900},
+        window_size={"width": 1500, "height": 900},
         wait_between_actions=1.5,
         minimum_wait_page_load_time=1.5,
         wait_for_network_idle_page_load_time=1.5,
