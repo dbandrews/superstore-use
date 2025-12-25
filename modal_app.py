@@ -130,7 +130,9 @@ def add_item_remote(item: str, index: int) -> dict:
         browser = create_browser()
         try:
             agent = Agent(
-                task=f"Go to https://www.realcanadiansuperstore.ca, search for {item} and add it to the cart. If you get any access denied errors, please return them.",
+                task=f"""First, visit https://accounts.pcid.ca/login and click the login button if there is one with an email address field.
+
+                Then, go to https://www.realcanadiansuperstore.ca, search for {item} and add it to the cart. If you get any access denied errors, please return them.""",
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
@@ -267,13 +269,13 @@ def run_place_order_job(job_id: str, checkout_job_id: str):
         modal.Secret.from_name("oxy-proxy"),
     ],
     timeout=3600,  # 1 hour timeout for long-running shopping sessions
-    allow_concurrent_inputs=100,
     env={
         "TIMEOUT_BrowserStartEvent": "120",
         "TIMEOUT_BrowserLaunchEvent": "120",
         "IN_DOCKER": "True",  # Required for browser-use in containers
     },
 )
+@modal.concurrent(max_inputs=100)
 @modal.wsgi_app()
 def flask_app():
     import time
