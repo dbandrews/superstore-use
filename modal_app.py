@@ -9,6 +9,9 @@ import modal
 
 app = modal.App("superstore-shopping-agent")
 
+# Create a persistent volume for storing session cookies
+session_volume = modal.Volume.from_name("superstore-session", create_if_missing=True)
+
 
 def get_proxy_config() -> Optional[dict]:
     """Get proxy configuration from environment variables."""
@@ -76,10 +79,18 @@ image = (
 )
 
 
-def create_browser(user_data_dir: str = "/app/superstore-profile"):
-    """Create browser configured for Modal's containerized environment."""
+def create_browser(shared_profile: bool = False):
+    """Create browser configured for Modal's containerized environment.
+
+    Args:
+        shared_profile: If True, use profile on volume for persistence across containers.
+                        If False, use profile from image (for isolated containers).
+    """
     from browser_use import Browser
     from browser_use.browser.profile import ProxySettings
+
+    # Use shared profile on volume for persistence, or local profile from image
+    user_data_dir = "/session/profile" if shared_profile else "/app/superstore-profile"
 
     # Build browser config with optional proxy
     proxy_config = get_proxy_config()
@@ -113,65 +124,178 @@ checkout_browser = None
     secrets=[
         modal.Secret.from_name("openai-secret"),
         modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
     ],
+    volumes={"/session": session_volume},  # Shared profile for persistent login
     timeout=600,  # 10 minute timeout per item
     env={
         "TIMEOUT_BrowserStartEvent": "120",
         "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
         "IN_DOCKER": "True",  # Required for browser-use in containers
     },
+    cpu=1,
+    memory=4096,
 )
 def add_item_remote(item: str, index: int) -> dict:
-    """Add a single item to cart in a separate Modal container (parallelizable)."""
+    """Add a single item to cart in a separate Modal container (parallelizable).
+
+    Uses shared profile on volume for persistent login across containers.
+    """
     from browser_use import Agent, ChatOpenAI
 
     async def _add_item():
-        # Each container has its own isolated copy of the profile from the image
-        browser = create_browser()
-        try:
-            agent = Agent(
-                task=f"""First, visit https://accounts.pcid.ca/login and click the login button if there is one with an email address field.
+        print(f"[Container {index}] Starting to add item: {item}")
 
-                Then, go to https://www.realcanadiansuperstore.ca, search for {item} and add it to the cart. If you get any access denied errors, please return them.""",
+        # Check if shared profile exists (indicates login has been done)
+        profile_exists = os.path.exists("/session/profile")
+        print(f"[Container {index}] Shared profile exists: {profile_exists}")
+
+        # Use shared profile on volume for persistent login state
+        print(f"[Container {index}] Creating browser with shared profile...")
+        browser = create_browser(shared_profile=True)
+        try:
+            print(f"[Container {index}] Browser created, initializing agent...")
+            agent = Agent(
+                task=f"""
+                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
+
+                You should already be logged in. Go to https://www.realcanadiansuperstore.ca/en
+
+                Steps:
+                1. Use the search bar to search for "{item}"
+                2. From the search results, select the most relevant item
+                3. Click "Add to Cart" or similar button
+                4. Wait for confirmation that item was added (look for cart update or confirmation message)
+
+                Complete when you see confirmation the item was added to cart.
+
+                NOTE: If you see a login page or are not logged in, report this as an error - the session should already be authenticated.
+                """,
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
-            await agent.run(max_steps=50)
+            print(f"[Container {index}] Running agent (max 30 steps)...")
+            result = await agent.run(max_steps=30)
+            print(f"[Container {index}] Agent completed. Result: {result}")
+            print(f"[Container {index}] SUCCESS: Added {item}")
             return {"item": item, "index": index, "status": "success", "message": f"Added {item}"}
         except Exception as e:
-            return {"item": item, "index": index, "status": "failed", "message": str(e)}
+            error_msg = str(e)
+            print(f"[Container {index}] ERROR: {error_msg}")
+            import traceback
+            print(f"[Container {index}] Traceback: {traceback.format_exc()}")
+            return {"item": item, "index": index, "status": "failed", "message": error_msg}
         finally:
+            print(f"[Container {index}] Cleaning up browser...")
             await browser.kill()
+            print(f"[Container {index}] Browser closed")
 
     return asyncio.run(_add_item())
 
 
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
+    ],
+    volumes={"/session": session_volume},
+    timeout=300,  # 5 minute timeout for login
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "IN_DOCKER": "True",
+    },
+    cpu=1,
+    memory=4096,
+)
+def login_remote() -> dict:
+    """Log in to Superstore and save session to shared volume.
+
+    This must be called before add_item_remote will work.
+    """
+    from browser_use import Agent, ChatOpenAI
+
+    async def _login():
+        username = os.environ.get("SUPERSTORE_USER")
+        password = os.environ.get("SUPERSTORE_PASSWORD")
+
+        if not username or not password:
+            return {"status": "failed", "message": "Missing SUPERSTORE_USER or SUPERSTORE_PASSWORD"}
+
+        print("[Login] Starting login process...")
+        print("[Login] Creating browser with shared profile...")
+
+        browser = create_browser(shared_profile=True)
+        try:
+            print("[Login] Browser created, initializing login agent...")
+            agent = Agent(
+                task=f"""
+                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
+
+                Steps:
+                1. Go to https://www.realcanadiansuperstore.ca/en
+                2. Click on "Sign in" button at top right
+                3. Enter username: {username}
+                4. Enter password: {password}
+                5. Click the login/sign in button
+                6. Wait for successful login confirmation (look for account menu or username displayed)
+
+                Complete when you see confirmation that you are logged in.
+                """,
+                llm=ChatOpenAI(model="gpt-4.1"),
+                browser_session=browser,
+            )
+            print("[Login] Running login agent (max 25 steps)...")
+            result = await agent.run(max_steps=25)
+            print(f"[Login] Agent completed. Result: {result}")
+
+            # Commit the volume to persist the profile
+            session_volume.commit()
+            print("[Login] Session committed to volume")
+
+            return {"status": "success", "message": "Login successful, session saved to volume"}
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[Login] ERROR: {error_msg}")
+            import traceback
+            print(f"[Login] Traceback: {traceback.format_exc()}")
+            return {"status": "failed", "message": error_msg}
+        finally:
+            print("[Login] Cleaning up browser...")
+            await browser.kill()
+            print("[Login] Browser closed")
+
+    return asyncio.run(_login())
+
+
 def run_add_items_job(job_id: str, items: list[str]):
-    """Background thread to manage adding items in parallel using Modal containers."""
+    """Add items to cart in parallel using separate Modal containers.
+
+    Each container shares the same login session via volume mount.
+    """
     jobs[job_id]["status"] = "running"
     jobs[job_id]["total"] = len(items)
     jobs[job_id]["completed"] = 0
     jobs[job_id]["results"] = []
 
-    # Prepare inputs for parallel processing: (item, index) tuples
+    print(f"[AddItems Job {job_id}] Starting parallel execution with {len(items)} items")
+
+    # Create inputs for starmap: [(item, index), ...]
     inputs = [(item, i) for i, item in enumerate(items, 1)]
 
-    try:
-        # Use Modal's starmap for parallel execution across separate containers
-        # order_outputs=False returns results as they complete for real-time progress updates
-        for result in add_item_remote.starmap(inputs, order_outputs=False):
-            jobs[job_id]["results"].append(result)
-            jobs[job_id]["completed"] += 1
-    except Exception as e:
-        # Handle any errors during parallel execution
-        remaining = len(items) - jobs[job_id]["completed"]
-        for _ in range(remaining):
-            jobs[job_id]["results"].append(
-                {"item": "unknown", "status": "failed", "message": f"Parallel execution error: {str(e)}"}
-            )
-            jobs[job_id]["completed"] += 1
+    # Process items in parallel across Modal containers
+    # Each container will use the shared profile on the volume
+    for result in add_item_remote.starmap(inputs, order_outputs=False):
+        print(f"[AddItems Job {job_id}] Got result: {result}")
+        jobs[job_id]["results"].append(result)
+        jobs[job_id]["completed"] += 1
 
     jobs[job_id]["status"] = "completed"
+    print(f"[AddItems Job {job_id}] Job complete!")
 
 
 def run_checkout_job(job_id: str):
@@ -267,13 +391,16 @@ def run_place_order_job(job_id: str, checkout_job_id: str):
     secrets=[
         modal.Secret.from_name("openai-secret"),
         modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
     ],
     timeout=3600,  # 1 hour timeout for long-running shopping sessions
     env={
         "TIMEOUT_BrowserStartEvent": "120",
         "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
         "IN_DOCKER": "True",  # Required for browser-use in containers
     },
+    volumes={"/session": session_volume},  # Mount volume for persistent session
 )
 @modal.concurrent(max_inputs=100)
 @modal.wsgi_app()
@@ -345,6 +472,13 @@ def flask_app():
 <body>
     <div class="container">
         <h1>Superstore Shopping Agent <span class="modal-badge">Modal</span></h1>
+        <div class="card" id="login-panel">
+            <h2>Session Status</h2>
+            <p id="login-status" style="margin-bottom: 15px; color: #666;">Click "Login" to authenticate before adding items.</p>
+            <div class="buttons">
+                <button class="btn-primary" id="login-btn" onclick="doLogin()">Login to Superstore</button>
+            </div>
+        </div>
         <div class="card" id="input-panel">
             <h2>Enter your grocery items</h2>
             <textarea id="items-input" placeholder="Enter each item on a new line, e.g.:
@@ -405,6 +539,35 @@ Bananas"></textarea>
         let currentCartJobId = null;
         let currentCheckoutJobId = null;
         let items = [];
+        async function doLogin() {
+            const btn = document.getElementById('login-btn');
+            const status = document.getElementById('login-status');
+            btn.disabled = true;
+            btn.textContent = 'Logging in...';
+            status.innerHTML = '<span class="spinner"></span> Logging in to Superstore... (this may take a minute)';
+            status.style.color = '#856404';
+            try {
+                const response = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    status.textContent = '✓ Logged in successfully! You can now add items.';
+                    status.style.color = '#28a745';
+                    btn.textContent = 'Logged In';
+                    btn.classList.remove('btn-primary');
+                    btn.classList.add('btn-success');
+                } else {
+                    status.textContent = '✗ Login failed: ' + data.message;
+                    status.style.color = '#dc3545';
+                    btn.textContent = 'Retry Login';
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                status.textContent = '✗ Login error: ' + error.message;
+                status.style.color = '#dc3545';
+                btn.textContent = 'Retry Login';
+                btn.disabled = false;
+            }
+        }
         function showPanel(panelId) {
             document.querySelectorAll('.status-panel').forEach(p => p.classList.remove('active'));
             document.getElementById('input-panel').style.display = panelId === 'input-panel' ? 'block' : 'none';
@@ -537,6 +700,22 @@ Bananas"></textarea>
     @flask_app.route("/")
     def index():
         return INDEX_HTML
+
+    @flask_app.route("/api/login", methods=["POST"])
+    def login():
+        """Trigger login to populate shared session profile.
+
+        Call this endpoint first before adding items to ensure session is authenticated.
+        """
+        print("[Flask] Login endpoint called")
+        try:
+            result = login_remote.remote()
+            print(f"[Flask] Login result: {result}")
+            return jsonify(result)
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[Flask] Login error: {error_msg}")
+            return jsonify({"status": "failed", "message": error_msg}), 500
 
     @flask_app.route("/api/add-to-cart", methods=["POST"])
     def add_to_cart():

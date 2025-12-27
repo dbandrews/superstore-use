@@ -1,6 +1,11 @@
 import asyncio
 import os
 
+os.environ["TIMEOUT_BrowserStartEvent"] = "120"
+os.environ["TIMEOUT_BrowserLaunchEvent"] = "120"
+os.environ["TIMEOUT_BrowserStateRequestEvent"] = "120"
+os.environ["IN_DOCKER"] = "True"
+
 from browser_use import Agent, Browser, ChatOpenAI
 from dotenv import load_dotenv
 
@@ -16,10 +21,10 @@ async def login_and_save():
         print("❌ Error: SUPERSTORE_USER and SUPERSTORE_PASSWORD must be set in .env file")
         return
 
-    print("🌐 Starting browser and logging in to Real Canadian Superstore...")
+    print(f"🌐 Starting browser under DISPLAY={os.environ.get('DISPLAY', 'not set')}...")
     print(f"   Username: {username}")
 
-    # Create browser with persistent profile
+    # Create browser with persistent profile (headful mode under Xvfb)
     browser = Browser(
         headless=False,
         window_size={"width": 1500, "height": 900},
