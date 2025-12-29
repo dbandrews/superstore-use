@@ -184,6 +184,7 @@ def add_item_remote(item: str, index: int) -> dict:
             error_msg = str(e)
             print(f"[Container {index}] ERROR: {error_msg}")
             import traceback
+
             print(f"[Container {index}] Traceback: {traceback.format_exc()}")
             return {"item": item, "index": index, "status": "failed", "message": error_msg}
         finally:
@@ -238,11 +239,12 @@ def login_remote() -> dict:
 
                 Steps:
                 1. Go to https://www.realcanadiansuperstore.ca/en
-                2. Click on "Sign in" button at top right
-                3. Enter username: {username}
-                4. Enter password: {password}
-                5. Click the login/sign in button
-                6. Wait for successful login confirmation (look for account menu or username displayed)
+                2. If the page says "My Shop" and "let's get started by shopping your regulars", you are already logged in and can skip the rest of the steps. 
+                3. Otherwise, continue with the following steps: Click on "Sign in" button at top right to login.
+                4. Enter username: {username}
+                5. Enter password: {password}
+                6. Click the login/sign in button
+                7. Wait for successful login confirmation (it should say "My Account" at top right)
 
                 Complete when you see confirmation that you are logged in.
                 """,
@@ -262,6 +264,7 @@ def login_remote() -> dict:
             error_msg = str(e)
             print(f"[Login] ERROR: {error_msg}")
             import traceback
+
             print(f"[Login] Traceback: {traceback.format_exc()}")
             return {"status": "failed", "message": error_msg}
         finally:
