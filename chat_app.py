@@ -7,8 +7,6 @@ and uses Modal for browser automation.
 Run with: uv run chat_app.py
 """
 
-import uuid
-
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from langchain_core.messages import AIMessage, HumanMessage
@@ -55,15 +53,207 @@ CHAT_HTML = """<!DOCTYPE html>
         }
         .header h1 { font-size: 1.3rem; font-weight: 600; }
         .header .subtitle { font-size: 0.85rem; opacity: 0.9; margin-top: 4px; }
-        .chat-container {
+        .main-container {
             flex: 1;
-            max-width: 800px;
+            display: flex;
+            max-width: 1200px;
             width: 100%;
             margin: 0 auto;
+            overflow: hidden;
+        }
+        .chat-container {
+            flex: 1;
             display: flex;
             flex-direction: column;
             background: white;
             box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            min-width: 0;
+        }
+        .sidebar {
+            width: 320px;
+            background: white;
+            border-left: 1px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.05);
+        }
+        .sidebar-header {
+            padding: 15px 20px;
+            background: #f8f8f8;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .sidebar-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #333;
+        }
+        .item-count {
+            background: #e31837;
+            color: white;
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .grocery-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .grocery-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            transition: all 0.2s;
+        }
+        .grocery-item:hover {
+            background: #f0f0f0;
+        }
+        .grocery-item .item-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .grocery-item .item-name {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #333;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .grocery-item .item-qty {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 2px;
+        }
+        .grocery-item .remove-btn {
+            background: none;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            padding: 5px;
+            font-size: 1.2rem;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+        .grocery-item .remove-btn:hover {
+            color: #e31837;
+        }
+        .grocery-item .edit-qty {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-right: 10px;
+        }
+        .grocery-item .qty-btn {
+            width: 24px;
+            height: 24px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+            color: #666;
+            transition: all 0.2s;
+        }
+        .grocery-item .qty-btn:hover {
+            border-color: #e31837;
+            color: #e31837;
+        }
+        .grocery-item .qty-display {
+            font-size: 0.85rem;
+            font-weight: 600;
+            min-width: 20px;
+            text-align: center;
+        }
+        .empty-list {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+        .empty-list .icon {
+            font-size: 3rem;
+            margin-bottom: 10px;
+        }
+        .empty-list p {
+            font-size: 0.9rem;
+        }
+        .sidebar-footer {
+            padding: 15px;
+            border-top: 1px solid #e0e0e0;
+            background: #f8f8f8;
+        }
+        .add-item-form {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .add-item-form input {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        .add-item-form input:focus {
+            border-color: #e31837;
+        }
+        .add-item-form button {
+            padding: 10px 15px;
+            background: #f0f0f0;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.2s;
+        }
+        .add-item-form button:hover {
+            background: #e0e0e0;
+        }
+        .sidebar-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .clear-btn {
+            flex: 1;
+            padding: 12px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .clear-btn:hover {
+            border-color: #e31837;
+            color: #e31837;
+        }
+        .add-all-btn {
+            flex: 2;
+            padding: 12px;
+            background: #e31837;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .add-all-btn:hover:not(:disabled) {
+            background: #c41530;
+        }
+        .add-all-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         .messages {
             flex: 1;
@@ -74,7 +264,7 @@ CHAT_HTML = """<!DOCTYPE html>
             gap: 15px;
         }
         .message {
-            max-width: 80%;
+            max-width: 85%;
             padding: 12px 16px;
             border-radius: 16px;
             line-height: 1.5;
@@ -180,6 +370,17 @@ CHAT_HTML = """<!DOCTYPE html>
             border-color: #e31837;
             color: #e31837;
         }
+        @media (max-width: 768px) {
+            .main-container {
+                flex-direction: column;
+            }
+            .sidebar {
+                width: 100%;
+                max-height: 40vh;
+                border-left: none;
+                border-top: 1px solid #e0e0e0;
+            }
+        }
     </style>
 </head>
 <body>
@@ -187,31 +388,58 @@ CHAT_HTML = """<!DOCTYPE html>
         <h1>Superstore Shopping Assistant</h1>
         <div class="subtitle">Tell me what you'd like to cook or buy</div>
     </div>
-    <div class="chat-container">
-        <div class="messages" id="messages">
-            <div class="message assistant">Hi! I'm your grocery shopping assistant for Real Canadian Superstore.
+    <div class="main-container">
+        <div class="chat-container">
+            <div class="messages" id="messages">
+                <div class="message assistant">Hi! I'm your grocery shopping assistant for Real Canadian Superstore.
 
-Tell me what you'd like to make or buy, and I'll help you add items to your cart.
+Tell me what you'd like to make or buy, and I'll help build your grocery list.
 
 For example, try saying:
 - "I want to make spaghetti bolognese"
-- "Add milk, eggs, and bread to my cart"
-- "What do I need for banana pancakes?"</div>
+- "What do I need for banana pancakes?"
+- "Add milk, eggs, and bread to my list"
+
+Items will appear in your grocery list on the right. When you're ready, click "Add All to Cart" to have me add everything to your Superstore cart!</div>
+            </div>
+            <div class="suggestions" id="suggestions">
+                <span class="suggestion" onclick="sendSuggestion(this)">I want to make pasta carbonara</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">Add milk and eggs</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">What do I need for pancakes?</span>
+            </div>
+            <div class="input-area">
+                <input type="text" id="message-input" placeholder="Type your message..." onkeypress="handleKeyPress(event)">
+                <button id="send-btn" onclick="sendMessage()">Send</button>
+            </div>
         </div>
-        <div class="suggestions" id="suggestions">
-            <span class="suggestion" onclick="sendSuggestion(this)">I want to make pasta carbonara</span>
-            <span class="suggestion" onclick="sendSuggestion(this)">Add milk and eggs</span>
-            <span class="suggestion" onclick="sendSuggestion(this)">What do I need for pancakes?</span>
-        </div>
-        <div class="input-area">
-            <input type="text" id="message-input" placeholder="Type your message..." onkeypress="handleKeyPress(event)">
-            <button id="send-btn" onclick="sendMessage()">Send</button>
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>Grocery List</h2>
+                <span class="item-count" id="item-count">0</span>
+            </div>
+            <div class="grocery-list" id="grocery-list">
+                <div class="empty-list" id="empty-list">
+                    <div class="icon">🛒</div>
+                    <p>Your grocery list is empty.<br>Chat with me to add items!</p>
+                </div>
+            </div>
+            <div class="sidebar-footer">
+                <div class="add-item-form">
+                    <input type="text" id="manual-item-input" placeholder="Add item manually..." onkeypress="handleManualItemKeyPress(event)">
+                    <button onclick="addManualItem()">+</button>
+                </div>
+                <div class="sidebar-actions">
+                    <button class="clear-btn" onclick="clearList()">Clear All</button>
+                    <button class="add-all-btn" id="add-all-btn" onclick="addAllToCart()" disabled>Add All to Cart</button>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
         const threadId = 'session-' + Math.random().toString(36).substr(2, 9);
         let isProcessing = false;
+        let groceryList = [];
 
         function addMessage(content, type) {
             const messages = document.getElementById('messages');
@@ -240,7 +468,213 @@ For example, try saying:
         function setInputEnabled(enabled) {
             document.getElementById('message-input').disabled = !enabled;
             document.getElementById('send-btn').disabled = !enabled;
+            document.getElementById('add-all-btn').disabled = !enabled || groceryList.length === 0;
             isProcessing = !enabled;
+        }
+
+        // Grocery list management
+        function renderGroceryList() {
+            const listEl = document.getElementById('grocery-list');
+            const emptyEl = document.getElementById('empty-list');
+            const countEl = document.getElementById('item-count');
+            const addAllBtn = document.getElementById('add-all-btn');
+
+            countEl.textContent = groceryList.length;
+            addAllBtn.disabled = isProcessing || groceryList.length === 0;
+
+            if (groceryList.length === 0) {
+                if (emptyEl) emptyEl.style.display = 'block';
+                listEl.querySelectorAll('.grocery-item').forEach(el => el.remove());
+                return;
+            }
+
+            if (emptyEl) emptyEl.style.display = 'none';
+            listEl.innerHTML = '';
+
+            groceryList.forEach((item, index) => {
+                const itemEl = document.createElement('div');
+                itemEl.className = 'grocery-item';
+                itemEl.innerHTML = `
+                    <div class="item-info">
+                        <div class="item-name">${escapeHtml(item.name)}</div>
+                        <div class="item-qty">Qty: ${item.qty}</div>
+                    </div>
+                    <div class="edit-qty">
+                        <button class="qty-btn" onclick="updateQty(${index}, -1)">−</button>
+                        <span class="qty-display">${item.qty}</span>
+                        <button class="qty-btn" onclick="updateQty(${index}, 1)">+</button>
+                    </div>
+                    <button class="remove-btn" onclick="removeItem(${index})">×</button>
+                `;
+                listEl.appendChild(itemEl);
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function addToGroceryList(name, qty = 1) {
+            // Check if item already exists
+            const existing = groceryList.find(item => item.name.toLowerCase() === name.toLowerCase());
+            if (existing) {
+                existing.qty += qty;
+            } else {
+                groceryList.push({ name, qty });
+            }
+            renderGroceryList();
+            saveListToStorage();
+        }
+
+        function removeItem(index) {
+            groceryList.splice(index, 1);
+            renderGroceryList();
+            saveListToStorage();
+        }
+
+        function updateQty(index, delta) {
+            groceryList[index].qty += delta;
+            if (groceryList[index].qty <= 0) {
+                removeItem(index);
+            } else {
+                renderGroceryList();
+                saveListToStorage();
+            }
+        }
+
+        function clearList() {
+            if (groceryList.length === 0) return;
+            if (confirm('Clear all items from your grocery list?')) {
+                groceryList = [];
+                renderGroceryList();
+                saveListToStorage();
+            }
+        }
+
+        function addManualItem() {
+            const input = document.getElementById('manual-item-input');
+            const name = input.value.trim();
+            if (name) {
+                addToGroceryList(name, 1);
+                input.value = '';
+            }
+        }
+
+        function handleManualItemKeyPress(event) {
+            if (event.key === 'Enter') {
+                addManualItem();
+            }
+        }
+
+        function saveListToStorage() {
+            localStorage.setItem('groceryList_' + threadId, JSON.stringify(groceryList));
+        }
+
+        function loadListFromStorage() {
+            const saved = localStorage.getItem('groceryList_' + threadId);
+            if (saved) {
+                groceryList = JSON.parse(saved);
+                renderGroceryList();
+            }
+        }
+
+        // Parse items from assistant response
+        function parseItemsFromResponse(text) {
+            const items = [];
+
+            // Split by any newline variant
+            const lines = text.split(/\\r?\\n|\\r/);
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+
+                // Match bullet points: -, •, *, or numbered lists: 1. or 1)
+                const bulletMatch = trimmed.match(/^[-•*]\\s+(.+)$/) ||
+                                   trimmed.match(/^\\d+[.)]\\s+(.+)$/);
+
+                if (bulletMatch) {
+                    let itemText = bulletMatch[1].trim();
+                    let qty = 1;
+
+                    // Try to extract quantity: "2x milk", "milk x2", "milk (2)"
+                    const qtyPatterns = [
+                        /^(\\d+)\\s*x\\s+(.+)$/i,      // "2x milk" or "2 x milk"
+                        /^(.+?)\\s*x\\s*(\\d+)$/i,     // "milk x2" or "milk x 2"
+                        /^(.+?)\\s*\\((\\d+)\\)$/      // "milk (2)"
+                    ];
+
+                    for (const pat of qtyPatterns) {
+                        const qtyMatch = itemText.match(pat);
+                        if (qtyMatch) {
+                            if (/^\\d+$/.test(qtyMatch[1])) {
+                                qty = parseInt(qtyMatch[1]);
+                                itemText = qtyMatch[2];
+                            } else {
+                                qty = parseInt(qtyMatch[2]);
+                                itemText = qtyMatch[1];
+                            }
+                            break;
+                        }
+                    }
+
+                    // Clean up: remove markdown bold, trailing punctuation
+                    itemText = itemText.replace(/\\*\\*/g, '').trim();
+                    itemText = itemText.replace(/[,;:]$/, '').trim();
+
+                    if (itemText.length > 0 && itemText.length < 100) {
+                        items.push({ name: itemText, qty });
+                    }
+                }
+            }
+
+            return items;
+        }
+
+        async function addAllToCart() {
+            if (groceryList.length === 0 || isProcessing) return;
+
+            const itemList = groceryList.map(item =>
+                item.qty > 1 ? `${item.qty}x ${item.name}` : item.name
+            ).join(', ');
+
+            const message = `Please add these items to my Superstore cart: ${itemList}`;
+
+            document.getElementById('message-input').value = '';
+            addMessage(message, 'user');
+            setInputEnabled(false);
+            showTyping();
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ thread_id: threadId, message: message })
+                });
+
+                const data = await response.json();
+                hideTyping();
+
+                if (data.error) {
+                    addMessage('Error: ' + data.error, 'error');
+                } else if (data.message) {
+                    addMessage(data.message, 'assistant');
+                    // Clear the list after successful addition
+                    if (!data.message.toLowerCase().includes('error') &&
+                        !data.message.toLowerCase().includes('failed')) {
+                        groceryList = [];
+                        renderGroceryList();
+                        saveListToStorage();
+                    }
+                }
+            } catch (error) {
+                hideTyping();
+                addMessage('Error: Failed to add items to cart. Please try again.', 'error');
+            }
+
+            setInputEnabled(true);
+            document.getElementById('message-input').focus();
         }
 
         async function sendMessage() {
@@ -270,10 +704,24 @@ For example, try saying:
                     addMessage('Error: ' + data.error, 'error');
                 } else if (data.message) {
                     addMessage(data.message, 'assistant');
+
+                    // Parse and add items from response
+                    if (data.grocery_items) {
+                        data.grocery_items.forEach(item => {
+                            addToGroceryList(item.name, item.qty || 1);
+                        });
+                    } else {
+                        // Try to parse items from the message text
+                        const parsedItems = parseItemsFromResponse(data.message);
+                        parsedItems.forEach(item => {
+                            addToGroceryList(item.name, item.qty);
+                        });
+                    }
                 }
             } catch (error) {
                 hideTyping();
-                addMessage('Error: Failed to send message. Please try again.', 'error');
+                //addMessage('Error: Failed to send message. Please try again.', 'error');
+                console.error('Error: Failed to send message. Please try again.', error);
             }
 
             setInputEnabled(true);
@@ -291,8 +739,9 @@ For example, try saying:
             }
         }
 
-        // Focus input on load
+        // Initialize
         document.getElementById('message-input').focus();
+        renderGroceryList();
     </script>
 </body>
 </html>
@@ -320,9 +769,7 @@ def chat():
         config = {"configurable": {"thread_id": thread_id}}
 
         # Invoke the agent
-        result = agent.invoke(
-            {"messages": [HumanMessage(content=message)]}, config=config
-        )
+        result = agent.invoke({"messages": [HumanMessage(content=message)]}, config=config)
 
         # Get the last AI message
         last_message = result["messages"][-1]
