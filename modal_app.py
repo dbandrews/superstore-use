@@ -25,6 +25,20 @@ def get_proxy_config() -> Optional[dict]:
     return {"server": proxy_server, "username": proxy_username, "password": proxy_password}
 
 
+# Stealth arguments to avoid bot detection (shared with login.py)
+STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-dev-shm-usage",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-web-security",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--disable-accelerated-2d-canvas",
+    "--disable-gpu",
+    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
+
+
 # Image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -70,12 +84,16 @@ image = (
             fi; \
         done'""",
     )
-    # Copy the browser profile directory to preserve login state
+    # Copy the local browser profile directory as a fallback profile
+    # This is used by create_browser(shared_profile=False) for isolated containers
+    # For persistent login across containers, use /session/profile on the volume instead
     .add_local_dir(
         "./superstore-profile",
         remote_path="/app/superstore-profile",
         copy=True,
     )
+    # Copy login.py so login_remote() can import it
+    .add_local_file("login.py", remote_path="/root/login.py")
 )
 
 
@@ -103,14 +121,14 @@ def create_browser(shared_profile: bool = False):
         )
 
     return Browser(
-        headless=True,  # Must be headless in Modal
-        window_size={"width": 1500, "height": 900},
+        headless=True,
+        window_size={"width": 1920, "height": 1080},
         wait_between_actions=1.5,
         minimum_wait_page_load_time=1.5,
         wait_for_network_idle_page_load_time=1.5,
         user_data_dir=user_data_dir,
         proxy=proxy_settings,
-        args=["--disable-features=LockProfileCookieDatabase"],
+        args=STEALTH_ARGS,
     )
 
 
@@ -203,7 +221,7 @@ def add_item_remote(item: str, index: int) -> dict:
         modal.Secret.from_name("superstore"),
     ],
     volumes={"/session": session_volume},
-    timeout=300,  # 5 minute timeout for login
+    timeout=600,  # 10 minute timeout for login
     env={
         "TIMEOUT_BrowserStartEvent": "120",
         "TIMEOUT_BrowserLaunchEvent": "120",
@@ -217,62 +235,15 @@ def login_remote() -> dict:
     """Log in to Superstore and save session to shared volume.
 
     This must be called before add_item_remote will work.
+    Uses the shared login_and_save() function from login.py which
+    automatically detects Modal environment and saves to /session/profile.
     """
-    from browser_use import Agent, ChatOpenAI
+    from login import login_and_save
 
-    async def _login():
-        username = os.environ.get("SUPERSTORE_USER")
-        password = os.environ.get("SUPERSTORE_PASSWORD")
-
-        if not username or not password:
-            return {"status": "failed", "message": "Missing SUPERSTORE_USER or SUPERSTORE_PASSWORD"}
-
-        print("[Login] Starting login process...")
-        print("[Login] Creating browser with shared profile...")
-
-        browser = create_browser(shared_profile=True)
-        try:
-            print("[Login] Browser created, initializing login agent...")
-            agent = Agent(
-                task=f"""
-                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
-
-                Steps:
-                1. Go to https://www.realcanadiansuperstore.ca/en
-                2. If the page says "My Shop" and "let's get started by shopping your regulars", you are already logged in and can skip the rest of the steps. 
-                3. Otherwise, continue with the following steps: Click on "Sign in" button at top right to login.
-                4. Enter username: {username}
-                5. Enter password: {password}
-                6. Click the login/sign in button
-                7. Wait for successful login confirmation (it should say "My Account" at top right)
-
-                Complete when you see confirmation that you are logged in.
-                """,
-                llm=ChatOpenAI(model="gpt-4.1"),
-                browser_session=browser,
-            )
-            print("[Login] Running login agent (max 25 steps)...")
-            result = await agent.run(max_steps=25)
-            print(f"[Login] Agent completed. Result: {result}")
-
-            # Commit the volume to persist the profile
-            session_volume.commit()
-            print("[Login] Session committed to volume")
-
-            return {"status": "success", "message": "Login successful, session saved to volume"}
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[Login] ERROR: {error_msg}")
-            import traceback
-
-            print(f"[Login] Traceback: {traceback.format_exc()}")
-            return {"status": "failed", "message": error_msg}
-        finally:
-            print("[Login] Cleaning up browser...")
-            await browser.kill()
-            print("[Login] Browser closed")
-
-    return asyncio.run(_login())
+    print("[Login] Starting login process on Modal...")
+    result = asyncio.run(login_and_save())
+    print(f"[Login] Login completed with status: {result.get('status')}")
+    return result
 
 
 def run_add_items_job(job_id: str, items: list[str]):
