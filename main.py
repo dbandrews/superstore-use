@@ -1,5 +1,9 @@
+import argparse
 import asyncio
 import multiprocessing
+import shutil
+import tempfile
+from pathlib import Path
 
 from browser_use import Agent, Browser, ChatOpenAI
 from dotenv import load_dotenv
@@ -7,16 +11,65 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def create_browser(user_data_dir: str = "./superstore-profile") -> Browser:
-    return Browser(
-        headless=False,  # Show browser window
-        window_size={"width": 700, "height": 700},  # Set window size
-        wait_between_actions=1.5,
-        minimum_wait_page_load_time=1.5,
-        wait_for_network_idle_page_load_time=1.5,
-        user_data_dir=user_data_dir,  # Persist browser state (login, cart)
-        args=["--disable-features=LockProfileCookieDatabase"],
-    )
+def create_browser(user_data_dir: str = "./superstore-profile", position: tuple[int, int] | None = None) -> Browser:
+    browser_kwargs = {
+        "headless": False,  # Show browser window
+        "window_size": {"width": 700, "height": 700},  # Set window size
+        "wait_between_actions": 0.1,
+        "minimum_wait_page_load_time": 0.1,
+        "wait_for_network_idle_page_load_time": 1.5,
+        "user_data_dir": user_data_dir,  # Persist browser state (login, cart)
+        "args": ["--disable-features=LockProfileCookieDatabase"],
+    }
+
+    # Add window position if specified
+    if position:
+        x, y = position
+        # Note: browser-use uses 'width' for x-position and 'height' for y-position
+        browser_kwargs["window_position"] = {"width": x, "height": y}
+
+    return Browser(**browser_kwargs)
+
+
+def calculate_window_positions(
+    num_windows: int, window_width: int = 700, window_height: int = 700, x_offset: int = 1080
+) -> list[tuple[int, int]]:
+    """Calculate tiled positions for browser windows on the screen.
+
+    Args:
+        num_windows: Number of windows to position
+        window_width: Width of each window
+        window_height: Height of each window
+        x_offset: Horizontal offset to shift all windows (e.g., to target a specific monitor)
+    """
+    # Calculate grid dimensions (prefer horizontal tiling)
+    if num_windows <= 2:
+        cols = num_windows
+    elif num_windows <= 4:
+        cols = 2
+    elif num_windows <= 6:
+        cols = 3
+    else:
+        cols = 3
+
+    positions = []
+    for i in range(num_windows):
+        row = i // cols
+        col = i % cols
+
+        # Calculate position with some spacing
+        x = col * window_width
+        y = row * window_height
+
+        # Add offset to target specific monitor
+        x += x_offset
+
+        # Add small offset to avoid exact overlap with taskbar/system UI
+        y += 10
+
+        positions.append((x, y))
+
+    return positions
 
 
 def collect_items_from_user() -> list[str]:
@@ -47,14 +100,23 @@ def collect_items_from_user() -> list[str]:
     return items
 
 
-def add_single_item_process(args: tuple[str, int, int]) -> str:
+def add_single_item_process(args: tuple[str, int, int, tuple[int, int]]) -> str:
     """Worker function to add a single item in a separate process."""
-    item, index, total = args
+    item, index, total, position = args
 
     async def _add_item():
         print(f"\n🔍 [{index}/{total}] Adding: {item}")
 
-        browser = create_browser()
+        # Create temporary profile copy for this worker to avoid conflicts
+        base_profile = Path("./superstore-profile")
+        temp_dir = tempfile.mkdtemp(prefix=f"browser-worker-{index}-")
+        temp_profile = Path(temp_dir) / "profile"
+
+        # Copy profile if it exists
+        if base_profile.exists():
+            shutil.copytree(base_profile, temp_profile, dirs_exist_ok=True)
+
+        browser = create_browser(user_data_dir=str(temp_profile), position=position)
 
         try:
             agent = Agent(
@@ -70,15 +132,20 @@ def add_single_item_process(args: tuple[str, int, int]) -> str:
             return f"failed: {item}"
         finally:
             await browser.kill()
+            # Clean up temporary profile
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     return asyncio.run(_add_item())
 
 
-async def add_items_to_cart(items: list[str]):
+async def add_items_to_cart(items: list[str], x_offset: int = 1080):
     """Adds all items to cart using parallel processes."""
     print(f"\n🚀 Adding {len(items)} items to cart in parallel...")
 
-    process_args = [(item, i, len(items)) for i, item in enumerate(items, 1)]
+    # Calculate window positions for tiling
+    positions = calculate_window_positions(min(len(items), 4), x_offset=x_offset)  # Max 4 parallel processes
+
+    process_args = [(item, i, len(items), positions[min(i - 1, len(positions) - 1)]) for i, item in enumerate(items, 1)]
 
     # Run items in parallel processes
     with multiprocessing.Pool(processes=min(len(items), 4)) as pool:
@@ -174,13 +241,13 @@ def confirm_checkout() -> bool:
             print("Please enter 'yes' or 'no'")
 
 
-async def main():
+async def main(x_offset: int = 1080):
     """Main function that orchestrates the grocery shopping flow."""
     # Step 1: Collect items from user
     items = collect_items_from_user()
 
     # Step 2: Add items to cart (returns persistent browser)
-    browser = await add_items_to_cart(items)
+    browser = await add_items_to_cart(items, x_offset=x_offset)
 
     # Step 3: Confirm and checkout
     if confirm_checkout():
@@ -192,4 +259,13 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="AI-powered grocery shopping agent for Real Canadian Superstore")
+    parser.add_argument(
+        "--monitor-offset",
+        type=int,
+        default=1080,
+        help="Horizontal pixel offset for positioning windows (default: 1080, for secondary monitor)",
+    )
+    args = parser.parse_args()
+
+    asyncio.run(main(x_offset=args.monitor_offset))
