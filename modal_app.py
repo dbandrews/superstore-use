@@ -137,6 +137,173 @@ jobs = {}
 checkout_browser = None
 
 
+# Success indicators for detecting if item was added to cart
+SUCCESS_INDICATORS = [
+    "added to cart",
+    "add to cart",
+    "item added",
+    "cart updated",
+    "in your cart",
+    "added to your cart",
+    "quantity updated",
+]
+
+
+def detect_success_from_history(agent) -> tuple[bool, str | None]:
+    """Parse browser-use agent history to detect if item was added successfully.
+
+    Returns:
+        tuple: (success: bool, evidence: str | None)
+    """
+    try:
+        extracted = agent.history.extracted_content()
+        for content in extracted:
+            content_lower = str(content).lower()
+            for indicator in SUCCESS_INDICATORS:
+                if indicator in content_lower:
+                    return True, str(content)[:100]
+
+        # Also check model thoughts for success indicators
+        thoughts = agent.history.model_thoughts()
+        for thought in thoughts:
+            thought_lower = str(thought).lower()
+            if any(ind in thought_lower for ind in SUCCESS_INDICATORS):
+                return True, str(thought)[:100]
+
+        # Check if we ended up on cart page
+        urls = agent.history.urls()
+        if urls and "cart" in urls[-1].lower():
+            return True, f"Ended on cart page: {urls[-1]}"
+
+    except Exception as e:
+        print(f"[Success Detection] Error: {e}")
+
+    return False, None
+
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
+    ],
+    volumes={"/session": session_volume},
+    timeout=600,
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "IN_DOCKER": "True",
+    },
+    cpu=1,
+    memory=4096,
+)
+def add_item_remote_streaming(item: str, index: int):
+    """Generator version that yields JSON progress events.
+
+    Yields:
+        JSON strings with progress events:
+        - {"type": "start", "item": item, "index": index}
+        - {"type": "complete", "item": item, "status": "success"|"failed", ...}
+    """
+    import json
+
+    from browser_use import Agent, ChatOpenAI
+
+    # Yield start event
+    yield json.dumps({"type": "start", "item": item, "index": index})
+
+    async def _add_item():
+        print(f"[Container {index}] Starting to add item: {item}")
+
+        profile_exists = os.path.exists("/session/profile")
+        print(f"[Container {index}] Shared profile exists: {profile_exists}")
+
+        print(f"[Container {index}] Creating browser with shared profile...")
+        browser = create_browser(shared_profile=True)
+
+        step_count = 0
+
+        async def on_step_end(agent):
+            """Track progress after each step."""
+            nonlocal step_count
+            step_count += 1
+            actions = agent.history.model_actions()
+            if actions:
+                print(f"[Container {index}] Step {step_count}: {str(actions[-1])[:80]}")
+
+        try:
+            print(f"[Container {index}] Browser created, initializing agent...")
+            agent = Agent(
+                task=f"""
+                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
+
+                You should already be logged in. Go to https://www.realcanadiansuperstore.ca/en
+
+                Steps:
+                1. Use the search bar to search for "{item}"
+                2. From the search results, select the most relevant item
+                3. Click "Add to Cart" or similar button
+                4. Wait for confirmation that item was added (look for cart update or confirmation message)
+
+                Complete when you see confirmation the item was added to cart.
+
+                NOTE: If you see a login page or are not logged in, report this as an error - the session should already be authenticated.
+                """,
+                llm=ChatOpenAI(model="gpt-4.1"),
+                browser_session=browser,
+            )
+
+            print(f"[Container {index}] Running agent (max 30 steps)...")
+            await agent.run(max_steps=30, on_step_end=on_step_end)
+
+            # Detect success from agent history
+            success, evidence = detect_success_from_history(agent)
+
+            if success:
+                print(f"[Container {index}] SUCCESS detected: {evidence}")
+                return {
+                    "item": item,
+                    "index": index,
+                    "status": "success",
+                    "message": f"Added {item}",
+                    "evidence": evidence,
+                    "steps": step_count,
+                }
+            else:
+                print(f"[Container {index}] No success indicator found after {step_count} steps")
+                return {
+                    "item": item,
+                    "index": index,
+                    "status": "uncertain",
+                    "message": f"Completed but could not confirm {item} was added",
+                    "steps": step_count,
+                }
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[Container {index}] ERROR: {error_msg}")
+            import traceback
+
+            print(f"[Container {index}] Traceback: {traceback.format_exc()}")
+            return {
+                "item": item,
+                "index": index,
+                "status": "failed",
+                "message": error_msg,
+                "steps": step_count,
+            }
+        finally:
+            print(f"[Container {index}] Cleaning up browser...")
+            await browser.kill()
+            print(f"[Container {index}] Browser closed")
+
+    # Run async function and yield final result
+    result = asyncio.run(_add_item())
+    yield json.dumps({"type": "complete", **result})
+
+
 @app.function(
     image=image,
     secrets=[
@@ -159,6 +326,7 @@ def add_item_remote(item: str, index: int) -> dict:
     """Add a single item to cart in a separate Modal container (parallelizable).
 
     Uses shared profile on volume for persistent login across containers.
+    Uses success detection from agent history to verify item was added.
     """
     from browser_use import Agent, ChatOpenAI
 
@@ -194,10 +362,29 @@ def add_item_remote(item: str, index: int) -> dict:
                 browser_session=browser,
             )
             print(f"[Container {index}] Running agent (max 30 steps)...")
-            result = await agent.run(max_steps=30)
-            print(f"[Container {index}] Agent completed. Result: {result}")
-            print(f"[Container {index}] SUCCESS: Added {item}")
-            return {"item": item, "index": index, "status": "success", "message": f"Added {item}"}
+            await agent.run(max_steps=30)
+
+            # Detect success from agent history
+            success, evidence = detect_success_from_history(agent)
+
+            if success:
+                print(f"[Container {index}] SUCCESS detected: {evidence}")
+                return {
+                    "item": item,
+                    "index": index,
+                    "status": "success",
+                    "message": f"Added {item}",
+                    "evidence": evidence,
+                }
+            else:
+                print(f"[Container {index}] No success indicator found")
+                return {
+                    "item": item,
+                    "index": index,
+                    "status": "uncertain",
+                    "message": f"Completed but could not confirm {item} was added",
+                }
+
         except Exception as e:
             error_msg = str(e)
             print(f"[Container {index}] ERROR: {error_msg}")

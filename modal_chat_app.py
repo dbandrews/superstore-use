@@ -874,46 +874,140 @@ def flask_app():
             input.value = '';
             addMessage(message, 'user');
             setInputEnabled(false);
-            showTyping();
 
             // Hide suggestions after first message
             document.getElementById('suggestions').style.display = 'none';
 
+            // Create progress indicator
+            const progressDiv = document.createElement('div');
+            progressDiv.className = 'message assistant';
+            progressDiv.id = 'current-progress';
+            progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+            document.getElementById('messages').appendChild(progressDiv);
+            scrollToBottom();
+
             try {
-                const response = await fetch('/api/chat', {
+                // Use streaming endpoint
+                const response = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ thread_id: threadId, message: message })
                 });
 
-                const data = await response.json();
-                hideTyping();
+                if (!response.ok) {
+                    throw new Error(`HTTP error: ${response.status}`);
+                }
 
-                if (data.error) {
-                    addMessage('Error: ' + data.error, 'error');
-                } else if (data.message) {
-                    addMessage(data.message, 'assistant');
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let itemsProcessed = [];
 
-                    // Parse and add items from response
-                    if (data.grocery_items) {
-                        data.grocery_items.forEach(item => {
-                            addToGroceryList(item.name, item.qty || 1);
-                        });
-                    } else {
-                        // Try to parse items from the message text
-                        const parsedItems = parseItemsFromResponse(data.message);
-                        parsedItems.forEach(item => {
-                            addToGroceryList(item.name, item.qty);
-                        });
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\\n\\n');
+                    buffer = lines.pop(); // Keep incomplete data in buffer
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const event = JSON.parse(line.slice(6));
+                                handleStreamEvent(event, progressDiv, itemsProcessed);
+                            } catch (e) {
+                                console.error('Failed to parse SSE event:', e);
+                            }
+                        }
                     }
                 }
+
             } catch (error) {
-                hideTyping();
-                console.error('Error: Failed to send message. Please try again.', error);
+                progressDiv.remove();
+                addMessage('Error: ' + error.message, 'error');
+                console.error('Streaming error:', error);
             }
 
             setInputEnabled(true);
             document.getElementById('message-input').focus();
+        }
+
+        function handleStreamEvent(event, progressDiv, itemsProcessed) {
+            const eventType = event.type || '';
+
+            switch (eventType) {
+                case 'message':
+                    // Final message from assistant
+                    progressDiv.remove();
+                    addMessage(event.content, 'assistant');
+
+                    // Parse and add items from response
+                    const parsedItems = parseItemsFromResponse(event.content);
+                    parsedItems.forEach(item => {
+                        addToGroceryList(item.name, item.qty);
+                    });
+                    break;
+
+                case 'error':
+                    progressDiv.remove();
+                    addMessage('Error: ' + event.message, 'error');
+                    break;
+
+                case 'done':
+                    // Stream complete - remove progress if still showing
+                    if (progressDiv.parentNode) {
+                        progressDiv.remove();
+                    }
+                    break;
+
+                case 'status':
+                    // Status update (e.g., "Checking login status...")
+                    progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Processing...')}</span>`;
+                    break;
+
+                case 'item_start':
+                    // Starting to process an item
+                    const itemInfo = event.index && event.total
+                        ? `Processing item ${event.index}/${event.total}: ${event.item}`
+                        : `Processing: ${event.item}`;
+                    progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(itemInfo)}</span>`;
+                    break;
+
+                case 'item_complete':
+                    // Item completed - show checkmark or X
+                    const icon = event.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>'
+                        : event.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>'
+                        : '<span style="color: #f87171;">&#10007;</span>';
+
+                    itemsProcessed.push({
+                        item: event.item,
+                        status: event.status,
+                        icon: icon
+                    });
+
+                    // Show progress header and accumulated results
+                    const completed = event.completed || itemsProcessed.length;
+                    const total = event.total || '?';
+                    let progressHtml = `<div style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 8px;">Progress: ${completed}/${total}</div>`;
+                    progressHtml += '<div style="font-size: 0.85rem;">';
+                    itemsProcessed.forEach(p => {
+                        progressHtml += `<div>${p.icon} ${escapeHtml(p.item)}</div>`;
+                    });
+                    progressHtml += '</div>';
+                    progressDiv.innerHTML = progressHtml;
+                    break;
+
+                case 'complete':
+                    // All items complete - show summary briefly before final message
+                    progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Complete')}</span>`;
+                    break;
+
+                default:
+                    // Unknown event type - log for debugging
+                    console.log('Unknown stream event:', event);
+            }
+            scrollToBottom();
         }
 
         function sendSuggestion(el) {
@@ -1049,6 +1143,133 @@ def flask_app():
             print(f"[Chat] Error: {e}")
             print(f"[Chat] Traceback: {traceback.format_exc()}")
             return jsonify({"error": str(e)}), 500
+
+    @flask_app.route("/api/chat/stream", methods=["POST"])
+    def chat_stream():
+        """Handle chat messages with SSE streaming for progress updates.
+
+        Returns Server-Sent Events with progress updates as the agent works.
+        Event types:
+            - {"type": "status|item_complete|complete", ...}: Progress from tools
+            - {"type": "message", "content": str}: Final assistant message
+            - {"type": "done"}: Stream complete
+            - {"type": "error", "message": str}: Error occurred
+        """
+        import asyncio
+        import json
+        import queue
+        import threading
+
+        from flask import Response
+
+        data = request.json
+        thread_id = data.get("thread_id")
+        message = data.get("message")
+
+        if not thread_id or not message:
+            return jsonify({"error": "Missing thread_id or message"}), 400
+
+        # Thread-safe queue for streaming events
+        event_queue = queue.Queue()
+
+        def run_agent_async():
+            """Run the async agent in a separate thread, pushing events to queue."""
+            try:
+                agent = get_or_create_agent(thread_id)
+                config = {"configurable": {"thread_id": thread_id}}
+
+                async def stream_agent():
+                    final_content = None
+
+                    async for chunk in agent.astream(
+                        {"messages": [HumanMessage(content=message)]},
+                        config=config,
+                        stream_mode=["updates", "custom"],
+                    ):
+                        # Handle custom progress events
+                        if isinstance(chunk, tuple) and len(chunk) == 2:
+                            mode, chunk_data = chunk
+                            if mode == "custom" and isinstance(chunk_data, dict):
+                                if "progress" in chunk_data:
+                                    # Push progress event to queue immediately
+                                    event_queue.put(chunk_data["progress"])
+                            elif mode == "updates" and isinstance(chunk_data, dict):
+                                # Check for final message in updates
+                                if "chat" in chunk_data:
+                                    msgs = chunk_data["chat"].get("messages", [])
+                                    for msg in msgs:
+                                        if isinstance(msg, AIMessage):
+                                            final_content = msg.content
+
+                    return final_content
+
+                # Run the async function
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    final_content = loop.run_until_complete(stream_agent())
+                finally:
+                    loop.close()
+
+                # Push final message
+                if final_content:
+                    event_queue.put({"type": "message", "content": final_content})
+                else:
+                    # Fallback: get message from state
+                    agent = get_or_create_agent(thread_id)
+                    config = {"configurable": {"thread_id": thread_id}}
+                    state = agent.get_state(config)
+                    if state.values.get("messages"):
+                        last_msg = state.values["messages"][-1]
+                        if isinstance(last_msg, AIMessage):
+                            event_queue.put({"type": "message", "content": last_msg.content})
+
+                # Signal completion
+                event_queue.put({"type": "done"})
+
+            except Exception as e:
+                import traceback
+
+                print(f"[ChatStream] Error: {e}")
+                print(f"[ChatStream] Traceback: {traceback.format_exc()}")
+                event_queue.put({"type": "error", "message": str(e)})
+                event_queue.put({"type": "done"})
+
+        def generate():
+            """Generator that yields SSE events from the queue."""
+            # Start the agent in a background thread
+            agent_thread = threading.Thread(target=run_agent_async)
+            agent_thread.start()
+
+            # Yield events as they arrive
+            while True:
+                try:
+                    # Wait for event with timeout to allow checking if thread is alive
+                    event = event_queue.get(timeout=1.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+
+                    # Stop on done or error
+                    if event.get("type") in ("done", "error"):
+                        break
+
+                except queue.Empty:
+                    # Check if thread is still running
+                    if not agent_thread.is_alive():
+                        break
+                    # Send keepalive comment to prevent timeout
+                    yield ": keepalive\n\n"
+
+            agent_thread.join(timeout=5.0)
+
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @flask_app.route("/api/reset", methods=["POST"])
     def reset():

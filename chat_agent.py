@@ -4,17 +4,21 @@ LangGraph-based Chat Agent for Grocery Shopping.
 This agent handles natural language conversation with users, extracts grocery items
 from their requests, and coordinates with Modal-based browser automation to add
 items to cart.
+
+Supports streaming progress events when used with stream_mode=["custom", ...].
 """
 
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.config import get_stream_writer
+from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from modal_tools import MODAL_TOOLS
+from modal_tools import add_items_to_cart_streaming, view_cart
 
 # System prompt for the grocery shopping assistant
 SYSTEM_PROMPT = """You are a helpful grocery shopping assistant for Real Canadian Superstore.
@@ -55,6 +59,47 @@ IMPORTANT:
 """
 
 
+@tool
+def add_items_to_cart(items: list[str]) -> str:
+    """
+    Add grocery items to the Real Canadian Superstore cart.
+
+    Items are added in parallel using Modal containers for efficiency.
+    Automatically handles login if not already logged in.
+
+    When used with stream_mode=["custom", ...], emits progress events
+    for each item being processed.
+
+    Args:
+        items: List of grocery items to add (e.g., ["milk", "eggs", "bread"])
+
+    Returns:
+        Summary of which items were added successfully and which failed.
+    """
+    # Get stream writer for emitting custom progress events
+    writer = get_stream_writer()
+
+    final_summary = ""
+
+    # Call the streaming version and emit progress events
+    for event in add_items_to_cart_streaming(items):
+        # Emit progress to the stream if streaming is enabled
+        if writer:
+            writer({"progress": event})
+
+        # Capture the final summary
+        if event.get("type") == "complete":
+            final_summary = event.get("message", "")
+        elif event.get("type") == "error":
+            final_summary = event.get("message", "Error occurred")
+
+    return final_summary or "Completed processing items."
+
+
+# Streaming-aware tools for the agent
+STREAMING_TOOLS = [add_items_to_cart, view_cart]
+
+
 class GroceryState(MessagesState):
     """State for the grocery shopping agent."""
 
@@ -62,10 +107,16 @@ class GroceryState(MessagesState):
 
 
 def create_chat_agent():
-    """Create and return the grocery shopping chat agent."""
-    # Create the LLM with tools bound
+    """Create and return the grocery shopping chat agent.
+
+    The agent supports streaming when invoked with:
+        agent.astream(inputs, config, stream_mode=["updates", "custom"])
+
+    Custom stream events are emitted for item processing progress.
+    """
+    # Create the LLM with streaming-aware tools bound
     llm = ChatOpenAI(model="gpt-4o", temperature=0)
-    llm_with_tools = llm.bind_tools(MODAL_TOOLS)
+    llm_with_tools = llm.bind_tools(STREAMING_TOOLS)
 
     def chat_node(state: GroceryState):
         """Main chat node that processes user messages."""
@@ -90,7 +141,7 @@ def create_chat_agent():
 
     # Add nodes
     workflow.add_node("chat", chat_node)
-    workflow.add_node("tools", ToolNode(MODAL_TOOLS))
+    workflow.add_node("tools", ToolNode(STREAMING_TOOLS))
 
     # Add edges
     workflow.add_edge(START, "chat")
