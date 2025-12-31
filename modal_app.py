@@ -200,21 +200,29 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
     memory=4096,
 )
 def add_item_remote_streaming(item: str, index: int):
-    """Generator version that yields JSON progress events.
+    """Generator version that yields JSON progress events in real-time.
+
+    Uses a separate thread for async work so we can yield step progress
+    as the agent executes, not just at start and end.
 
     Yields:
         JSON strings with progress events:
         - {"type": "start", "item": item, "index": index}
+        - {"type": "step", "item": item, "index": index, "step": N, "action": str}
         - {"type": "complete", "item": item, "status": "success"|"failed", ...}
     """
     import json
+    import queue
+    import threading
 
     from browser_use import Agent, ChatOpenAI
 
-    # Yield start event
-    yield json.dumps({"type": "start", "item": item, "index": index})
+    # Thread-safe queue for step progress events
+    step_events: queue.Queue[dict] = queue.Queue()
+    result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
 
     async def _add_item():
+        """Async function that runs the browser agent and pushes step events to queue."""
         print(f"[Container {index}] Starting to add item: {item}")
 
         profile_exists = os.path.exists("/session/profile")
@@ -226,12 +234,21 @@ def add_item_remote_streaming(item: str, index: int):
         step_count = 0
 
         async def on_step_end(agent):
-            """Track progress after each step."""
+            """Push step progress to the queue for streaming."""
             nonlocal step_count
             step_count += 1
             actions = agent.history.model_actions()
-            if actions:
-                print(f"[Container {index}] Step {step_count}: {str(actions[-1])[:80]}")
+            action_str = str(actions[-1])[:80] if actions else "..."
+            print(f"[Container {index}] Step {step_count}: {action_str}")
+
+            # Push step event to queue for yielding
+            step_events.put({
+                "type": "step",
+                "item": item,
+                "index": index,
+                "step": step_count,
+                "action": action_str,
+            })
 
         try:
             print(f"[Container {index}] Browser created, initializing agent...")
@@ -299,9 +316,58 @@ def add_item_remote_streaming(item: str, index: int):
             await browser.kill()
             print(f"[Container {index}] Browser closed")
 
-    # Run async function and yield final result
-    result = asyncio.run(_add_item())
-    yield json.dumps({"type": "complete", **result})
+    def run_async():
+        """Run async code in a thread so generator can yield during execution."""
+        try:
+            result_holder["result"] = asyncio.run(_add_item())
+        except Exception as e:
+            result_holder["error"] = str(e)
+
+    # Start async work in a separate thread
+    worker_thread = threading.Thread(target=run_async)
+    worker_thread.start()
+
+    # Yield start event immediately
+    yield json.dumps({"type": "start", "item": item, "index": index})
+
+    # Poll for step events while the async work is running
+    while worker_thread.is_alive():
+        try:
+            # Short timeout so we can check if thread is still alive
+            event = step_events.get(timeout=0.5)
+            yield json.dumps(event)
+        except queue.Empty:
+            pass
+
+    # Drain any remaining step events
+    while not step_events.empty():
+        try:
+            event = step_events.get_nowait()
+            yield json.dumps(event)
+        except queue.Empty:
+            break
+
+    # Yield final result
+    if result_holder["error"]:
+        yield json.dumps({
+            "type": "complete",
+            "item": item,
+            "index": index,
+            "status": "failed",
+            "message": result_holder["error"],
+            "steps": 0,
+        })
+    elif result_holder["result"] and isinstance(result_holder["result"], dict):
+        yield json.dumps({"type": "complete", **result_holder["result"]})
+    else:
+        yield json.dumps({
+            "type": "complete",
+            "item": item,
+            "index": index,
+            "status": "failed",
+            "message": "Unknown error - no result returned",
+            "steps": 0,
+        })
 
 
 @app.function(

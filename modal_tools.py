@@ -129,7 +129,8 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
     Yields:
         dict: Progress events with types:
             - {"type": "status", "message": str}
-            - {"type": "item_complete", "item": str, "status": str, "message": str}
+            - {"type": "item_start", "item": str, "index": int, "total": int}
+            - {"type": "item_complete", "item": str, "status": str, "message": str, ...}
             - {"type": "complete", "success_count": int, "failure_count": int, "message": str}
             - {"type": "error", "message": str}
 
@@ -148,37 +149,49 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
         yield {"type": "error", "message": f"Login failed: {login_msg}"}
         return f"Cannot add items: {login_msg}"
 
+    total = len(items)
+
+    # Emit item_start events for all items upfront (they'll process in parallel)
+    for i, item in enumerate(items, 1):
+        yield {
+            "type": "item_start",
+            "item": item,
+            "index": i,
+            "total": total,
+            "started": i,
+        }
+
     yield {
         "type": "status",
-        "message": f"Adding {len(items)} items in parallel...",
-        "total": len(items),
+        "message": f"Adding {total} items in parallel...",
+        "total": total,
     }
 
     try:
         # Use the non-streaming version with starmap for parallel execution
+        # (Modal's starmap doesn't support generator functions)
         add_fn = get_modal_function("add_item_remote")
-        total = len(items)
 
         # Prepare inputs for starmap: [(item, index), ...]
         inputs = [(item, i) for i, item in enumerate(items, 1)]
 
         results = []
-        completed = 0
+        completed_count = 0
 
-        # Process items in PARALLEL - results come back as they complete
+        # Process items in PARALLEL - results come back as containers complete
         for result in add_fn.starmap(inputs, order_outputs=False):
-            completed += 1
+            completed_count += 1
             results.append(result)
 
-            # Yield progress as each item completes
             yield {
                 "type": "item_complete",
                 "item": result.get("item", "?"),
                 "index": result.get("index", 0),
                 "total": total,
-                "completed": completed,
+                "completed": completed_count,
                 "status": result.get("status", "unknown"),
                 "message": result.get("message", ""),
+                "steps": result.get("steps", 0),
             }
 
         # Calculate summary

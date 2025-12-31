@@ -933,6 +933,9 @@ def flask_app():
             document.getElementById('message-input').focus();
         }
 
+        // Track per-item step progress for live updates
+        let itemStepProgress = {};
+
         function handleStreamEvent(event, progressDiv, itemsProcessed) {
             const eventType = event.type || '';
 
@@ -959,6 +962,8 @@ def flask_app():
                     if (progressDiv.parentNode) {
                         progressDiv.remove();
                     }
+                    // Reset step tracking for next request
+                    itemStepProgress = {};
                     break;
 
                 case 'status':
@@ -967,15 +972,24 @@ def flask_app():
                     break;
 
                 case 'item_start':
-                    // Starting to process an item
-                    const itemInfo = event.index && event.total
-                        ? `Processing item ${event.index}/${event.total}: ${event.item}`
-                        : `Processing: ${event.item}`;
-                    progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(itemInfo)}</span>`;
+                    // Starting to process an item - initialize step tracking
+                    itemStepProgress[event.item] = { step: 0, action: 'Starting...' };
+                    updateProgressDisplay(progressDiv, itemsProcessed);
+                    break;
+
+                case 'step':
+                    // Step progress within an item's processing
+                    itemStepProgress[event.item] = {
+                        step: event.step || 0,
+                        action: event.action || '...'
+                    };
+                    updateProgressDisplay(progressDiv, itemsProcessed);
                     break;
 
                 case 'item_complete':
-                    // Item completed - show checkmark or X
+                    // Item completed - remove from step tracking, add to completed
+                    delete itemStepProgress[event.item];
+
                     const icon = event.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>'
                         : event.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>'
                         : '<span style="color: #f87171;">&#10007;</span>';
@@ -983,19 +997,11 @@ def flask_app():
                     itemsProcessed.push({
                         item: event.item,
                         status: event.status,
-                        icon: icon
+                        icon: icon,
+                        steps: event.steps || 0
                     });
 
-                    // Show progress header and accumulated results
-                    const completed = event.completed || itemsProcessed.length;
-                    const total = event.total || '?';
-                    let progressHtml = `<div style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 8px;">Progress: ${completed}/${total}</div>`;
-                    progressHtml += '<div style="font-size: 0.85rem;">';
-                    itemsProcessed.forEach(p => {
-                        progressHtml += `<div>${p.icon} ${escapeHtml(p.item)}</div>`;
-                    });
-                    progressHtml += '</div>';
-                    progressDiv.innerHTML = progressHtml;
+                    updateProgressDisplay(progressDiv, itemsProcessed);
                     break;
 
                 case 'complete':
@@ -1008,6 +1014,41 @@ def flask_app():
                     console.log('Unknown stream event:', event);
             }
             scrollToBottom();
+        }
+
+        function updateProgressDisplay(progressDiv, itemsProcessed) {
+            // Calculate totals
+            const inProgress = Object.keys(itemStepProgress).length;
+            const completed = itemsProcessed.length;
+            const total = inProgress + completed;
+
+            let html = '';
+
+            // Header showing overall progress
+            if (total > 0) {
+                html += `<div style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 8px;">Progress: ${completed}/${total}</div>`;
+            }
+
+            html += '<div style="font-size: 0.85rem;">';
+
+            // Show completed items first
+            itemsProcessed.forEach(p => {
+                const stepsInfo = p.steps ? ` <span style="opacity: 0.5; font-size: 0.7rem;">(${p.steps} steps)</span>` : '';
+                html += `<div>${p.icon} ${escapeHtml(p.item)}${stepsInfo}</div>`;
+            });
+
+            // Show in-progress items with their current step
+            for (const [item, progress] of Object.entries(itemStepProgress)) {
+                const stepText = progress.step > 0 ? `Step ${progress.step}` : 'Starting';
+                const actionText = progress.action ? `: ${progress.action}` : '';
+                html += `<div style="opacity: 0.7;">`;
+                html += `<span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span>`;
+                html += `${escapeHtml(item)} <span style="font-size: 0.7rem; opacity: 0.6;">${stepText}${escapeHtml(actionText.substring(0, 40))}</span>`;
+                html += `</div>`;
+            }
+
+            html += '</div>';
+            progressDiv.innerHTML = html;
         }
 
         function sendSuggestion(el) {
