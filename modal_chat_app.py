@@ -65,166 +65,180 @@ def flask_app():
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            background: #0d1117;
+            color: rgba(255,255,255,0.9);
             height: 100vh;
             display: flex;
             flex-direction: column;
         }
         .header {
-            background: #e31837;
-            color: white;
-            padding: 15px 20px;
-            text-align: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            background: transparent;
+            padding: 20px 24px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
         }
-        .header h1 { font-size: 1.3rem; font-weight: 600; }
-        .header .subtitle { font-size: 0.85rem; opacity: 0.9; margin-top: 4px; }
+        .header h1 {
+            font-size: 0.75rem;
+            font-weight: 400;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.4);
+        }
+        .header .subtitle { display: none; }
         .modal-badge {
-            background: #6366f1;
-            color: white;
+            background: rgba(99, 102, 241, 0.2);
+            color: rgba(129, 140, 248, 0.9);
             padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.7rem;
+            border-radius: 2px;
+            font-size: 0.65rem;
             margin-left: 8px;
             vertical-align: middle;
+            border: 1px solid rgba(99, 102, 241, 0.3);
         }
         .main-container {
             flex: 1;
             display: flex;
-            max-width: 1200px;
-            width: 100%;
-            margin: 0 auto;
             overflow: hidden;
         }
         .chat-container {
             flex: 1;
             display: flex;
             flex-direction: column;
-            background: white;
-            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            background: transparent;
             min-width: 0;
         }
         .sidebar {
-            width: 320px;
-            background: white;
-            border-left: 1px solid #e0e0e0;
+            width: 280px;
+            background: rgba(255,255,255,0.02);
+            border-left: 1px solid rgba(255,255,255,0.06);
             display: flex;
             flex-direction: column;
-            box-shadow: -2px 0 10px rgba(0,0,0,0.05);
         }
         .sidebar-header {
-            padding: 15px 20px;
-            background: #f8f8f8;
-            border-bottom: 1px solid #e0e0e0;
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
         .sidebar-header h2 {
-            font-size: 1rem;
-            font-weight: 600;
-            color: #333;
+            font-size: 0.7rem;
+            font-weight: 400;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.4);
         }
         .item-count {
-            background: #e31837;
-            color: white;
-            font-size: 0.75rem;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-weight: 600;
+            background: rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.6);
+            font-size: 0.65rem;
+            padding: 3px 8px;
+            border-radius: 2px;
+            font-weight: 400;
+            transition: all 0.2s ease;
+        }
+        .item-count.has-items {
+            background: rgba(255,255,255,0.9);
+            color: #0d1117;
         }
         .grocery-list {
             flex: 1;
             overflow-y: auto;
-            padding: 10px;
+            padding: 12px;
         }
+        .grocery-list::-webkit-scrollbar { width: 4px; }
+        .grocery-list::-webkit-scrollbar-track { background: transparent; }
+        .grocery-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
         .grocery-item {
             display: flex;
             align-items: center;
-            padding: 12px 15px;
-            background: #f9f9f9;
-            border-radius: 8px;
-            margin-bottom: 8px;
-            transition: all 0.2s;
+            padding: 12px 14px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.04);
+            border-radius: 4px;
+            margin-bottom: 6px;
+            transition: all 0.15s ease;
         }
         .grocery-item:hover {
-            background: #f0f0f0;
+            background: rgba(255,255,255,0.05);
+            border-color: rgba(255,255,255,0.08);
         }
         .grocery-item .item-info {
             flex: 1;
             min-width: 0;
         }
         .grocery-item .item-name {
-            font-size: 0.9rem;
-            font-weight: 500;
-            color: #333;
+            font-size: 0.8rem;
+            font-weight: 400;
+            color: rgba(255,255,255,0.8);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
         .grocery-item .item-qty {
-            font-size: 0.8rem;
-            color: #666;
+            font-size: 0.7rem;
+            color: rgba(255,255,255,0.3);
             margin-top: 2px;
         }
         .grocery-item .remove-btn {
             background: none;
             border: none;
-            color: #999;
+            color: rgba(255,255,255,0.2);
             cursor: pointer;
-            padding: 5px;
-            font-size: 1.2rem;
+            padding: 4px;
+            font-size: 1rem;
             line-height: 1;
-            transition: color 0.2s;
+            transition: color 0.15s;
         }
         .grocery-item .remove-btn:hover {
-            color: #e31837;
+            color: rgba(255,255,255,0.6);
         }
         .grocery-item .edit-qty {
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 6px;
             margin-right: 10px;
         }
         .grocery-item .qty-btn {
-            width: 24px;
-            height: 24px;
-            border: 1px solid #ddd;
-            background: white;
-            border-radius: 4px;
+            width: 22px;
+            height: 22px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: transparent;
+            border-radius: 2px;
             cursor: pointer;
-            font-size: 1rem;
+            font-size: 0.85rem;
             line-height: 1;
-            color: #666;
-            transition: all 0.2s;
+            color: rgba(255,255,255,0.4);
+            transition: all 0.15s;
         }
         .grocery-item .qty-btn:hover {
-            border-color: #e31837;
-            color: #e31837;
+            border-color: rgba(255,255,255,0.3);
+            color: rgba(255,255,255,0.8);
         }
         .grocery-item .qty-display {
-            font-size: 0.85rem;
-            font-weight: 600;
-            min-width: 20px;
+            font-size: 0.75rem;
+            font-weight: 400;
+            min-width: 18px;
             text-align: center;
+            color: rgba(255,255,255,0.6);
         }
         .empty-list {
             text-align: center;
             padding: 40px 20px;
-            color: #999;
+            color: rgba(255,255,255,0.25);
         }
         .empty-list .icon {
-            font-size: 3rem;
-            margin-bottom: 10px;
+            font-size: 1.5rem;
+            margin-bottom: 12px;
+            opacity: 0.5;
         }
         .empty-list p {
-            font-size: 0.9rem;
+            font-size: 0.75rem;
+            line-height: 1.6;
         }
         .sidebar-footer {
-            padding: 15px;
-            border-top: 1px solid #e0e0e0;
-            background: #f8f8f8;
+            padding: 16px;
+            border-top: 1px solid rgba(255,255,255,0.06);
         }
         .add-item-form {
             display: flex;
@@ -234,25 +248,32 @@ def flask_app():
         .add-item-form input {
             flex: 1;
             padding: 10px 12px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            font-size: 0.9rem;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-family: inherit;
             outline: none;
+            background: rgba(255,255,255,0.03);
+            color: rgba(255,255,255,0.8);
+            transition: border-color 0.15s;
         }
+        .add-item-form input::placeholder { color: rgba(255,255,255,0.25); }
         .add-item-form input:focus {
-            border-color: #e31837;
+            border-color: rgba(255,255,255,0.2);
         }
         .add-item-form button {
-            padding: 10px 15px;
-            background: #f0f0f0;
-            border: 1px solid #ddd;
-            border-radius: 6px;
+            padding: 10px 14px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
             cursor: pointer;
-            font-size: 1rem;
-            transition: all 0.2s;
+            font-size: 0.9rem;
+            color: rgba(255,255,255,0.5);
+            transition: all 0.15s;
         }
         .add-item-form button:hover {
-            background: #e0e0e0;
+            background: rgba(255,255,255,0.08);
+            color: rgba(255,255,255,0.8);
         }
         .sidebar-actions {
             display: flex;
@@ -260,213 +281,326 @@ def flask_app():
         }
         .clear-btn {
             flex: 1;
-            padding: 12px;
-            background: white;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 0.9rem;
+            padding: 11px;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-family: inherit;
+            color: rgba(255,255,255,0.4);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s;
         }
         .clear-btn:hover {
-            border-color: #e31837;
-            color: #e31837;
+            border-color: rgba(255,255,255,0.2);
+            color: rgba(255,255,255,0.7);
         }
         .add-all-btn {
             flex: 2;
-            padding: 12px;
-            background: #e31837;
-            color: white;
+            padding: 11px;
+            background: rgba(255,255,255,0.9);
+            color: #0d1117;
             border: none;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            font-weight: 600;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            font-family: inherit;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: all 0.15s;
         }
         .add-all-btn:hover:not(:disabled) {
-            background: #c41530;
+            background: rgba(255,255,255,1);
         }
         .add-all-btn:disabled {
-            opacity: 0.5;
+            opacity: 0.3;
             cursor: not-allowed;
         }
         .messages {
             flex: 1;
             overflow-y: auto;
-            padding: 20px;
+            overflow-x: hidden;
+            padding: 24px;
             display: flex;
             flex-direction: column;
-            gap: 15px;
+            gap: 16px;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            scroll-behavior: smooth;
         }
+        .messages::-webkit-scrollbar { width: 4px; }
+        .messages::-webkit-scrollbar-track { background: transparent; }
+        .messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
         .message {
-            max-width: 85%;
-            padding: 12px 16px;
-            border-radius: 16px;
-            line-height: 1.5;
+            max-width: 80%;
+            padding: 14px 18px;
+            border-radius: 4px;
+            line-height: 1.6;
             white-space: pre-wrap;
+            font-size: 0.85rem;
         }
         .message.user {
             align-self: flex-end;
-            background: #e31837;
-            color: white;
-            border-bottom-right-radius: 4px;
+            background: rgba(255,255,255,0.9);
+            color: #0d1117;
         }
         .message.assistant {
             align-self: flex-start;
-            background: #f0f0f0;
-            color: #333;
-            border-bottom-left-radius: 4px;
+            background: rgba(255,255,255,0.05);
+            color: rgba(255,255,255,0.85);
+            border: 1px solid rgba(255,255,255,0.06);
         }
         .message.system {
             align-self: center;
-            background: #fff3cd;
-            color: #856404;
-            font-size: 0.9rem;
+            background: rgba(255,200,100,0.1);
+            color: rgba(255,200,100,0.8);
+            font-size: 0.8rem;
             max-width: 90%;
+            border: 1px solid rgba(255,200,100,0.15);
         }
         .message.error {
             align-self: center;
-            background: #f8d7da;
-            color: #721c24;
-            font-size: 0.9rem;
+            background: rgba(255,100,100,0.1);
+            color: rgba(255,150,150,0.9);
+            font-size: 0.8rem;
+            border: 1px solid rgba(255,100,100,0.15);
         }
         .typing-indicator {
             align-self: flex-start;
-            background: #f0f0f0;
-            padding: 12px 16px;
-            border-radius: 16px;
-            border-bottom-left-radius: 4px;
+            background: rgba(255,255,255,0.05);
+            padding: 14px 18px;
+            border-radius: 4px;
+            border: 1px solid rgba(255,255,255,0.06);
         }
         .typing-indicator span {
             display: inline-block;
-            width: 8px;
-            height: 8px;
-            background: #999;
+            width: 6px;
+            height: 6px;
+            background: rgba(255,255,255,0.4);
             border-radius: 50%;
             margin-right: 4px;
-            animation: bounce 1.4s infinite ease-in-out both;
+            animation: pulse 1.4s infinite ease-in-out both;
         }
         .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
         .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
-        @keyframes bounce {
-            0%, 80%, 100% { transform: scale(0); }
-            40% { transform: scale(1); }
+        @keyframes pulse {
+            0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+            40% { opacity: 1; transform: scale(1); }
         }
         .input-area {
-            padding: 15px 20px;
-            background: #fff;
-            border-top: 1px solid #e0e0e0;
+            padding: 20px 24px;
+            background: transparent;
+            border-top: 1px solid rgba(255,255,255,0.06);
             display: flex;
-            gap: 10px;
+            gap: 12px;
         }
         .input-area input {
             flex: 1;
-            padding: 12px 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 24px;
-            font-size: 15px;
+            padding: 14px 18px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-family: inherit;
             outline: none;
-            transition: border-color 0.2s;
+            background: rgba(255,255,255,0.03);
+            color: rgba(255,255,255,0.9);
+            transition: border-color 0.15s;
         }
-        .input-area input:focus { border-color: #e31837; }
-        .input-area input:disabled { background: #f5f5f5; }
+        .input-area input::placeholder { color: rgba(255,255,255,0.25); }
+        .input-area input:focus { border-color: rgba(255,255,255,0.25); }
+        .input-area input:disabled { background: rgba(255,255,255,0.02); }
         .input-area button {
-            padding: 12px 24px;
-            background: #e31837;
-            color: white;
+            padding: 14px 28px;
+            background: rgba(255,255,255,0.9);
+            color: #0d1117;
             border: none;
-            border-radius: 24px;
-            font-size: 15px;
-            font-weight: 600;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: inherit;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: all 0.15s;
         }
-        .input-area button:hover:not(:disabled) { background: #c41530; }
-        .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .input-area button:hover:not(:disabled) { background: rgba(255,255,255,1); }
+        .input-area button:disabled { opacity: 0.3; cursor: not-allowed; }
         .suggestions {
-            padding: 10px 20px;
-            background: #fafafa;
-            border-top: 1px solid #e0e0e0;
+            padding: 12px 24px;
+            background: transparent;
+            border-top: 1px solid rgba(255,255,255,0.06);
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
         }
         .suggestion {
             padding: 8px 14px;
-            background: white;
-            border: 1px solid #ddd;
-            border-radius: 16px;
-            font-size: 13px;
-            color: #666;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.5);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s;
         }
         .suggestion:hover {
-            border-color: #e31837;
-            color: #e31837;
+            border-color: rgba(255,255,255,0.2);
+            color: rgba(255,255,255,0.8);
         }
         @media (max-width: 768px) {
+            body {
+                overflow: hidden;
+                position: fixed;
+                width: 100%;
+                height: 100%;
+            }
             .main-container {
                 flex-direction: column;
+                height: calc(100vh - 53px);
+                overflow: hidden;
+            }
+            .chat-container {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                height: 100%;
+                overflow: hidden;
+                padding-bottom: 0;
+            }
+            .messages {
+                flex: 1;
+                min-height: 0;
+                padding: 16px;
+                padding-bottom: 130px;
+                gap: 12px;
+                touch-action: pan-y;
+            }
+            .message {
+                max-width: 90%;
+            }
+            .suggestions {
+                display: none;
+            }
+            .input-area {
+                position: fixed;
+                bottom: 56px;
+                left: 0;
+                right: 0;
+                background: #0d1117;
+                border-top: 1px solid rgba(255,255,255,0.06);
+                z-index: 50;
+                padding: 12px 16px;
+            }
+            .input-area input {
+                padding: 12px 14px;
+                font-size: 16px;
+            }
+            .input-area button {
+                padding: 12px 20px;
             }
             .sidebar {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
                 width: 100%;
-                max-height: 40vh;
+                height: auto;
+                max-height: 70vh;
                 border-left: none;
-                border-top: 1px solid #e0e0e0;
+                border-top: 1px solid rgba(255,255,255,0.1);
+                border-radius: 16px 16px 0 0;
+                transform: translateY(calc(100% - 56px));
+                transition: transform 0.3s ease;
+                z-index: 100;
+                background: #0d1117;
+            }
+            .sidebar.expanded {
+                transform: translateY(0);
+            }
+            .sidebar-header {
+                cursor: pointer;
+                padding: 16px 20px;
+                padding-top: 20px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                position: relative;
+            }
+            .sidebar-header::before {
+                content: '';
+                position: absolute;
+                top: 8px;
+                left: 50%;
+                transform: translateX(-50%);
+                width: 36px;
+                height: 4px;
+                background: rgba(255,255,255,0.15);
+                border-radius: 2px;
+            }
+            .sidebar-toggle {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .sidebar-toggle-icon {
+                display: inline-block;
+                transition: transform 0.3s ease;
+                color: rgba(255,255,255,0.4);
+                font-size: 0.8rem;
+            }
+            .sidebar.expanded .sidebar-toggle-icon {
+                transform: rotate(180deg);
+            }
+            .grocery-list {
+                max-height: calc(70vh - 140px);
+                -webkit-overflow-scrolling: touch;
+            }
+        }
+        @media (min-width: 769px) {
+            .sidebar-toggle-icon {
+                display: none;
             }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>Superstore Shopping Assistant <span class="modal-badge">Modal</span></h1>
-        <div class="subtitle">Tell me what you'd like to cook or buy</div>
+        <h1>superstore-use <span class="modal-badge">Modal</span></h1>
     </div>
     <div class="main-container">
         <div class="chat-container">
             <div class="messages" id="messages">
-                <div class="message assistant">Hi! I'm your grocery shopping assistant for Real Canadian Superstore.
-
-Tell me what you'd like to make or buy, and I'll help build your grocery list.
-
-For example, try saying:
-- "I want to make spaghetti bolognese"
-- "What do I need for banana pancakes?"
-- "Add milk, eggs, and bread to my list"
-
-Items will appear in your grocery list on the right. When you're ready, click "Add All to Cart" to have me add everything to your Superstore cart!</div>
+                <div class="message assistant">What would you like to cook or buy?</div>
             </div>
             <div class="suggestions" id="suggestions">
-                <span class="suggestion" onclick="sendSuggestion(this)">I want to make pasta carbonara</span>
-                <span class="suggestion" onclick="sendSuggestion(this)">Add milk and eggs</span>
-                <span class="suggestion" onclick="sendSuggestion(this)">What do I need for pancakes?</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">pasta carbonara</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">milk, eggs, bread</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">banana pancakes</span>
             </div>
             <div class="input-area">
-                <input type="text" id="message-input" placeholder="Type your message..." onkeypress="handleKeyPress(event)">
+                <input type="text" id="message-input" placeholder="Message..." onkeypress="handleKeyPress(event)">
                 <button id="send-btn" onclick="sendMessage()">Send</button>
             </div>
         </div>
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <h2>Grocery List</h2>
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header" onclick="toggleSidebar()">
+                <div class="sidebar-toggle">
+                    <h2>Grocery List</h2>
+                    <span class="sidebar-toggle-icon" id="toggle-icon">&#9650;</span>
+                </div>
                 <span class="item-count" id="item-count">0</span>
             </div>
             <div class="grocery-list" id="grocery-list">
                 <div class="empty-list" id="empty-list">
-                    <div class="icon">🛒</div>
-                    <p>Your grocery list is empty.<br>Chat with me to add items!</p>
+                    <div class="icon">—</div>
+                    <p>No items yet</p>
                 </div>
             </div>
             <div class="sidebar-footer">
                 <div class="add-item-form">
-                    <input type="text" id="manual-item-input" placeholder="Add item manually..." onkeypress="handleManualItemKeyPress(event)">
+                    <input type="text" id="manual-item-input" placeholder="Add item..." onkeypress="handleManualItemKeyPress(event)">
                     <button onclick="addManualItem()">+</button>
                 </div>
                 <div class="sidebar-actions">
-                    <button class="clear-btn" onclick="clearList()">Clear All</button>
-                    <button class="add-all-btn" id="add-all-btn" onclick="addAllToCart()" disabled>Add All to Cart</button>
+                    <button class="clear-btn" onclick="clearList()">Clear</button>
+                    <button class="add-all-btn" id="add-all-btn" onclick="addAllToCart()" disabled>Add to Cart</button>
                 </div>
             </div>
         </div>
@@ -483,7 +617,13 @@ Items will appear in your grocery list on the right. When you're ready, click "A
             div.className = 'message ' + type;
             div.textContent = content;
             messages.appendChild(div);
-            messages.scrollTop = messages.scrollHeight;
+            // Smooth scroll to bottom with slight delay for render
+            requestAnimationFrame(() => {
+                messages.scrollTo({
+                    top: messages.scrollHeight,
+                    behavior: 'smooth'
+                });
+            });
         }
 
         function showTyping() {
@@ -493,7 +633,12 @@ Items will appear in your grocery list on the right. When you're ready, click "A
             div.id = 'typing';
             div.innerHTML = '<span></span><span></span><span></span>';
             messages.appendChild(div);
-            messages.scrollTop = messages.scrollHeight;
+            requestAnimationFrame(() => {
+                messages.scrollTo({
+                    top: messages.scrollHeight,
+                    behavior: 'smooth'
+                });
+            });
         }
 
         function hideTyping() {
@@ -517,6 +662,13 @@ Items will appear in your grocery list on the right. When you're ready, click "A
 
             countEl.textContent = groceryList.length;
             addAllBtn.disabled = isProcessing || groceryList.length === 0;
+
+            // Highlight badge when items exist
+            if (groceryList.length > 0) {
+                countEl.classList.add('has-items');
+            } else {
+                countEl.classList.remove('has-items');
+            }
 
             if (groceryList.length === 0) {
                 if (emptyEl) emptyEl.style.display = 'block';
@@ -562,6 +714,7 @@ Items will appear in your grocery list on the right. When you're ready, click "A
             }
             renderGroceryList();
             saveListToStorage();
+            expandSidebarOnMobile();
         }
 
         function removeItem(index) {
@@ -772,6 +925,83 @@ Items will appear in your grocery list on the right. When you're ready, click "A
             if (event.key === 'Enter' && !isProcessing) {
                 sendMessage();
             }
+        }
+
+        // Sidebar toggle for mobile
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('expanded');
+        }
+
+        // Close sidebar when clicking outside on mobile
+        document.addEventListener('click', function(e) {
+            const sidebar = document.getElementById('sidebar');
+            if (window.innerWidth <= 768 &&
+                sidebar.classList.contains('expanded') &&
+                !sidebar.contains(e.target)) {
+                sidebar.classList.remove('expanded');
+            }
+        });
+
+        // Auto-expand sidebar when items are added on mobile
+        function expandSidebarOnMobile() {
+            if (window.innerWidth <= 768) {
+                const sidebar = document.getElementById('sidebar');
+                sidebar.classList.add('expanded');
+                // Auto-collapse after 2 seconds
+                setTimeout(() => {
+                    sidebar.classList.remove('expanded');
+                }, 2000);
+            }
+        }
+
+        // Swipe gesture support for mobile bottom sheet
+        let touchStartY = 0;
+        let touchEndY = 0;
+
+        document.getElementById('sidebar').addEventListener('touchstart', function(e) {
+            touchStartY = e.changedTouches[0].screenY;
+        }, { passive: true });
+
+        document.getElementById('sidebar').addEventListener('touchend', function(e) {
+            touchEndY = e.changedTouches[0].screenY;
+            handleSwipe();
+        }, { passive: true });
+
+        function handleSwipe() {
+            const sidebar = document.getElementById('sidebar');
+            const swipeDistance = touchStartY - touchEndY;
+
+            if (swipeDistance > 50) {
+                // Swipe up - expand
+                sidebar.classList.add('expanded');
+            } else if (swipeDistance < -50) {
+                // Swipe down - collapse
+                sidebar.classList.remove('expanded');
+            }
+        }
+
+        // Handle mobile keyboard / viewport resize
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', () => {
+                const viewport = window.visualViewport;
+                const messages = document.getElementById('messages');
+
+                // Adjust for keyboard
+                if (viewport.height < window.innerHeight * 0.8) {
+                    // Keyboard is open
+                    document.body.style.height = viewport.height + 'px';
+                    messages.scrollTop = messages.scrollHeight;
+                } else {
+                    document.body.style.height = '100%';
+                }
+            });
+        }
+
+        // Scroll to bottom helper
+        function scrollToBottom() {
+            const messages = document.getElementById('messages');
+            messages.scrollTop = messages.scrollHeight;
         }
 
         // Initialize
