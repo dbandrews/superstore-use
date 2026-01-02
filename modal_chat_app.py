@@ -11,6 +11,9 @@ import modal
 
 app = modal.App("superstore-chat-agent")
 
+# Distributed Dict for storing job state (persists across function invocations)
+job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=True)
+
 # Create image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -39,6 +42,9 @@ image = (
 @modal.wsgi_app()
 def flask_app():
     """Flask app for the chat UI."""
+    import time
+    import uuid
+
     from flask import Flask, jsonify, request
     from langchain_core.messages import AIMessage, HumanMessage
 
@@ -54,6 +60,93 @@ def flask_app():
         if thread_id not in agents:
             agents[thread_id] = create_chat_agent()
         return agents[thread_id]
+
+    # Job state management helpers
+    def create_job(thread_id: str, message: str) -> str:
+        """Create a new job and return its ID."""
+        job_id = str(uuid.uuid4())[:8]
+        job_state_dict[job_id] = {
+            "id": job_id,
+            "thread_id": thread_id,
+            "message": message,
+            "status": "running",  # running, completed, error
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "items_processed": [],  # [{item, status, icon, steps}]
+            "items_in_progress": {},  # {item: {step, action}}
+            "final_message": None,
+            "error": None,
+        }
+        return job_id
+
+    def update_job_progress(job_id: str, event: dict):
+        """Update job state based on a progress event."""
+        try:
+            job = job_state_dict.get(job_id)
+            if not job:
+                return
+
+            event_type = event.get("type", "")
+            job["updated_at"] = time.time()
+
+            if event_type == "item_start":
+                job["items_in_progress"][event["item"]] = {"step": 0, "action": "Starting..."}
+
+            elif event_type == "step":
+                if event.get("item") in job["items_in_progress"]:
+                    job["items_in_progress"][event["item"]] = {
+                        "step": event.get("step", 0),
+                        "action": event.get("action", "...")
+                    }
+
+            elif event_type == "item_complete":
+                # Move from in_progress to processed
+                item_name = event.get("item")
+                if item_name in job["items_in_progress"]:
+                    del job["items_in_progress"][item_name]
+                job["items_processed"].append({
+                    "item": item_name,
+                    "status": event.get("status", "unknown"),
+                    "steps": event.get("steps", 0)
+                })
+
+            elif event_type == "complete":
+                job["status"] = "completed"
+                job["success_count"] = event.get("success_count", 0)
+
+            elif event_type == "message":
+                job["final_message"] = event.get("content")
+
+            elif event_type == "error":
+                job["status"] = "error"
+                job["error"] = event.get("message")
+
+            job_state_dict[job_id] = job
+
+        except Exception as e:
+            print(f"[JobState] Error updating job {job_id}: {e}")
+
+    def get_job_status(job_id: str) -> dict | None:
+        """Get the current state of a job."""
+        try:
+            job = job_state_dict.get(job_id)
+            if job:
+                # Check if job is stale (older than 10 minutes)
+                if time.time() - job.get("created_at", 0) > 600:
+                    job["status"] = "expired"
+            return job
+        except Exception as e:
+            print(f"[JobState] Error getting job {job_id}: {e}")
+            return None
+
+    def cleanup_old_jobs():
+        """Remove jobs older than 10 minutes (called periodically)."""
+        try:
+            # Note: Modal Dict doesn't support iteration easily,
+            # so we rely on the expiry check in get_job_status
+            pass
+        except Exception:
+            pass
 
     # Inline HTML template for the chat UI
     CHAT_HTML = """<!DOCTYPE html>
@@ -601,6 +694,194 @@ def flask_app():
         let isProcessing = false;
         let groceryList = [];
 
+        // Mobile app-switch handling
+        let currentAbortController = null;
+        let wasInterruptedByVisibility = false;
+        let pendingRequest = null;  // Track in-flight request for recovery
+        let currentJobId = null;  // Current job ID for reconnection
+
+        // Job ID persistence for reconnection
+        function saveJobId(jobId) {
+            currentJobId = jobId;
+            localStorage.setItem('currentJobId_' + threadId, jobId);
+            localStorage.setItem('currentJobTime_' + threadId, Date.now().toString());
+        }
+
+        function clearJobId() {
+            currentJobId = null;
+            localStorage.removeItem('currentJobId_' + threadId);
+            localStorage.removeItem('currentJobTime_' + threadId);
+        }
+
+        function getSavedJobId() {
+            const jobId = localStorage.getItem('currentJobId_' + threadId);
+            const jobTime = localStorage.getItem('currentJobTime_' + threadId);
+            // Only return if job is less than 10 minutes old
+            if (jobId && jobTime && (Date.now() - parseInt(jobTime)) < 600000) {
+                return jobId;
+            }
+            return null;
+        }
+
+        // Poll job status for reconnection
+        async function pollJobStatus(jobId) {
+            try {
+                const response = await fetch(`/api/job/${jobId}/status`);
+                if (!response.ok) {
+                    return null;
+                }
+                return await response.json();
+            } catch (e) {
+                console.error('Failed to poll job status:', e);
+                return null;
+            }
+        }
+
+        // Render job state to progress div
+        function renderJobState(job, progressDiv) {
+            if (!job || !progressDiv) return;
+
+            const status = job.status;
+            const itemsProcessed = job.items_processed || [];
+            const itemsInProgress = job.items_in_progress || {};
+
+            if (status === 'completed' || status === 'error') {
+                // Job finished - show final message or error
+                if (job.final_message) {
+                    progressDiv.remove();
+                    addMessage(job.final_message, 'assistant');
+                } else if (job.error) {
+                    progressDiv.remove();
+                    addMessage('Error: ' + job.error, 'error');
+                } else {
+                    // Show completion summary
+                    let html = '<div style="font-size: 0.85rem;">';
+                    itemsProcessed.forEach(p => {
+                        const icon = p.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>'
+                            : p.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>'
+                            : '<span style="color: #f87171;">&#10007;</span>';
+                        html += `<div>${icon} ${escapeHtml(p.item)}</div>`;
+                    });
+                    html += '</div>';
+                    progressDiv.innerHTML = html;
+                }
+                clearJobId();
+                setInputEnabled(true);
+                return true;  // Job complete
+            }
+
+            // Job still running - show current progress
+            let html = '';
+            const inProgressCount = Object.keys(itemsInProgress).length;
+            const completedCount = itemsProcessed.length;
+            const total = inProgressCount + completedCount;
+
+            if (total > 0) {
+                html += `<div style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 8px;">Progress: ${completedCount}/${total}</div>`;
+            }
+
+            html += '<div style="font-size: 0.85rem;">';
+
+            // Show completed items
+            itemsProcessed.forEach(p => {
+                const icon = p.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>'
+                    : p.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>'
+                    : '<span style="color: #f87171;">&#10007;</span>';
+                html += `<div>${icon} ${escapeHtml(p.item)}</div>`;
+            });
+
+            // Show in-progress items
+            for (const [item, progress] of Object.entries(itemsInProgress)) {
+                let statusText = 'In Progress';
+                if (progress.step > 0) {
+                    statusText = `Step ${progress.step}`;
+                    if (progress.action && progress.action !== 'Starting...') {
+                        statusText += `: ${progress.action.substring(0, 40)}`;
+                    }
+                }
+                html += `<div style="opacity: 0.7;">`;
+                html += `<span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span>`;
+                html += `${escapeHtml(item)} <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
+                html += `</div>`;
+            }
+
+            html += '</div>';
+            progressDiv.innerHTML = html;
+            return false;  // Job still running
+        }
+
+        // Check and resume any pending job on page load or visibility return
+        async function checkAndResumeJob() {
+            const savedJobId = getSavedJobId();
+            if (!savedJobId) return;
+
+            console.log('Found saved job:', savedJobId);
+
+            // Get or create progress div
+            let progressDiv = document.getElementById('current-progress');
+            if (!progressDiv) {
+                progressDiv = document.createElement('div');
+                progressDiv.className = 'message assistant';
+                progressDiv.id = 'current-progress';
+                progressDiv.innerHTML = '<div style="opacity: 0.7;">Reconnecting to your request...</div>';
+                document.getElementById('messages').appendChild(progressDiv);
+                scrollToBottom();
+            } else {
+                progressDiv.innerHTML = '<div style="opacity: 0.7;">Reconnecting to your request...</div>';
+            }
+
+            setInputEnabled(false);
+
+            // Poll for status
+            const job = await pollJobStatus(savedJobId);
+            if (!job) {
+                progressDiv.innerHTML = '<div style="opacity: 0.6;">Could not reconnect. Your request may have completed - check your cart.</div>';
+                clearJobId();
+                setInputEnabled(true);
+                return;
+            }
+
+            // Render current state
+            const isComplete = renderJobState(job, progressDiv);
+
+            // If still running, keep polling
+            if (!isComplete) {
+                currentJobId = savedJobId;
+                pollUntilComplete(savedJobId, progressDiv);
+            }
+        }
+
+        // Poll until job completes
+        async function pollUntilComplete(jobId, progressDiv) {
+            const pollInterval = 2000;  // 2 seconds
+            const maxPolls = 150;  // 5 minutes max
+            let polls = 0;
+
+            const poll = async () => {
+                if (polls >= maxPolls) {
+                    progressDiv.innerHTML = '<div style="opacity: 0.6;">Request timed out. Check your cart for results.</div>';
+                    clearJobId();
+                    setInputEnabled(true);
+                    return;
+                }
+
+                const job = await pollJobStatus(jobId);
+                if (!job) {
+                    polls++;
+                    setTimeout(poll, pollInterval);
+                    return;
+                }
+
+                const isComplete = renderJobState(job, progressDiv);
+                if (!isComplete) {
+                    polls++;
+                    setTimeout(poll, pollInterval);
+                }
+            };
+
+            poll();
+        }
+
         function addMessage(content, type) {
             const messages = document.getElementById('messages');
             const div = document.createElement('div');
@@ -823,6 +1104,7 @@ def flask_app():
             document.getElementById('message-input').value = '';
             addMessage(message, 'user');
             setInputEnabled(false);
+            wasInterruptedByVisibility = false;
 
             // Hide suggestions after first message
             document.getElementById('suggestions').style.display = 'none';
@@ -835,14 +1117,18 @@ def flask_app():
             document.getElementById('messages').appendChild(progressDiv);
             scrollToBottom();
 
+            // Create AbortController for this request
+            currentAbortController = new AbortController();
             let itemsProcessed = [];
+            pendingRequest = { message, progressDiv, itemsProcessed, isCartAdd: true };
 
             try {
                 // Use streaming endpoint (same as sendMessage)
                 const response = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ thread_id: threadId, message: message })
+                    body: JSON.stringify({ thread_id: threadId, message: message }),
+                    signal: currentAbortController.signal
                 });
 
                 if (!response.ok) {
@@ -886,12 +1172,31 @@ def flask_app():
                     saveListToStorage();
                 }
 
+                // Successfully completed
+                pendingRequest = null;
+
             } catch (error) {
-                progressDiv.remove();
-                addMessage('Error: Failed to add items to cart. Please try again.', 'error');
-                console.error('Streaming error:', error);
+                if (error.name === 'AbortError' || wasInterruptedByVisibility) {
+                    // Connection interrupted by app switch - show reconnection message
+                    // Keep job ID saved so we can poll for status on visibility return
+                    progressDiv.innerHTML = `
+                        <div style="opacity: 0.8;">
+                            <div style="margin-bottom: 8px;">Connection paused while app was in background.</div>
+                            <div style="font-size: 0.75rem; opacity: 0.6;">Will automatically reconnect when you return.</div>
+                        </div>
+                    `;
+                    console.log('Stream interrupted by visibility change, job ID preserved:', currentJobId);
+                    // Don't clear job ID - it will be polled on visibility return
+                } else {
+                    progressDiv.remove();
+                    addMessage('Error: Failed to add items to cart. Please try again.', 'error');
+                    clearJobId();  // Clear on real errors
+                    console.error('Streaming error:', error);
+                }
+                pendingRequest = null;
             }
 
+            currentAbortController = null;
             setInputEnabled(true);
             document.getElementById('message-input').focus();
         }
@@ -904,6 +1209,7 @@ def flask_app():
             input.value = '';
             addMessage(message, 'user');
             setInputEnabled(false);
+            wasInterruptedByVisibility = false;
 
             // Hide suggestions after first message
             document.getElementById('suggestions').style.display = 'none';
@@ -916,12 +1222,17 @@ def flask_app():
             document.getElementById('messages').appendChild(progressDiv);
             scrollToBottom();
 
+            // Create AbortController for this request
+            currentAbortController = new AbortController();
+            pendingRequest = { message, progressDiv, itemsProcessed: [] };
+
             try {
                 // Use streaming endpoint
                 const response = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ thread_id: threadId, message: message })
+                    body: JSON.stringify({ thread_id: threadId, message: message }),
+                    signal: currentAbortController.signal
                 });
 
                 if (!response.ok) {
@@ -931,7 +1242,7 @@ def flask_app():
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
-                let itemsProcessed = [];
+                let itemsProcessed = pendingRequest.itemsProcessed;
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -953,12 +1264,31 @@ def flask_app():
                     }
                 }
 
+                // Successfully completed
+                pendingRequest = null;
+
             } catch (error) {
-                progressDiv.remove();
-                addMessage('Error: ' + error.message, 'error');
-                console.error('Streaming error:', error);
+                if (error.name === 'AbortError' || wasInterruptedByVisibility) {
+                    // Connection interrupted by app switch - show reconnection message
+                    // Keep job ID saved so we can poll for status on visibility return
+                    progressDiv.innerHTML = `
+                        <div style="opacity: 0.8;">
+                            <div style="margin-bottom: 8px;">Connection paused while app was in background.</div>
+                            <div style="font-size: 0.75rem; opacity: 0.6;">Will automatically reconnect when you return.</div>
+                        </div>
+                    `;
+                    console.log('Stream interrupted by visibility change, job ID preserved:', currentJobId);
+                    // Don't clear job ID - it will be polled on visibility return
+                } else {
+                    progressDiv.remove();
+                    addMessage('Error: ' + error.message, 'error');
+                    clearJobId();  // Clear on real errors
+                    console.error('Streaming error:', error);
+                }
+                pendingRequest = null;
             }
 
+            currentAbortController = null;
             setInputEnabled(true);
             document.getElementById('message-input').focus();
         }
@@ -970,10 +1300,17 @@ def flask_app():
             const eventType = event.type || '';
 
             switch (eventType) {
+                case 'job_id':
+                    // Save job ID for reconnection
+                    saveJobId(event.job_id);
+                    console.log('Job started:', event.job_id);
+                    break;
+
                 case 'message':
                     // Final message from assistant
                     progressDiv.remove();
                     addMessage(event.content, 'assistant');
+                    clearJobId();  // Job complete
 
                     // Parse and add items from response
                     const parsedItems = parseItemsFromResponse(event.content);
@@ -985,6 +1322,7 @@ def flask_app():
                 case 'error':
                     progressDiv.remove();
                     addMessage('Error: ' + event.message, 'error');
+                    clearJobId();  // Job failed
                     break;
 
                 case 'done':
@@ -994,6 +1332,7 @@ def flask_app():
                     }
                     // Reset step tracking for next request
                     itemStepProgress = {};
+                    clearJobId();  // Ensure cleared
                     break;
 
                 case 'status':
@@ -1168,6 +1507,37 @@ def flask_app():
             });
         }
 
+        // Handle page visibility changes (mobile app switching)
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && isProcessing) {
+                // Page is being hidden while processing - mark as interrupted
+                wasInterruptedByVisibility = true;
+                console.log('Page hidden while processing - marking as interrupted');
+
+                // Note: We don't abort immediately - the connection may survive brief switches
+                // The abort will happen naturally if the connection drops
+            } else if (!document.hidden) {
+                // Page is visible again - check for pending jobs to resume
+                console.log('Page visible again');
+
+                // Check if we have a saved job to resume
+                const savedJobId = getSavedJobId();
+                if (savedJobId && !isProcessing) {
+                    console.log('Resuming saved job:', savedJobId);
+                    checkAndResumeJob();
+                } else if (wasInterruptedByVisibility && currentJobId) {
+                    // We were interrupted and have a current job - poll for its status
+                    console.log('Reconnecting to interrupted job:', currentJobId);
+                    const progressDiv = document.getElementById('current-progress');
+                    if (progressDiv) {
+                        progressDiv.innerHTML = '<div style="opacity: 0.7;">Reconnecting...</div>';
+                        pollUntilComplete(currentJobId, progressDiv);
+                    }
+                }
+                wasInterruptedByVisibility = false;
+            }
+        });
+
         // Scroll to bottom helper
         function scrollToBottom() {
             const messages = document.getElementById('messages');
@@ -1177,6 +1547,9 @@ def flask_app():
         // Initialize
         document.getElementById('message-input').focus();
         renderGroceryList();
+
+        // Check for any pending jobs to resume (e.g., after page refresh)
+        checkAndResumeJob();
     </script>
 </body>
 </html>
@@ -1226,6 +1599,7 @@ def flask_app():
 
         Returns Server-Sent Events with progress updates as the agent works.
         Event types:
+            - {"type": "job_id", "job_id": str}: Job ID for reconnection
             - {"type": "status|item_complete|complete", ...}: Progress from tools
             - {"type": "message", "content": str}: Final assistant message
             - {"type": "done"}: Stream complete
@@ -1244,6 +1618,9 @@ def flask_app():
 
         if not thread_id or not message:
             return jsonify({"error": "Missing thread_id or message"}), 400
+
+        # Create a job for tracking
+        job_id = create_job(thread_id, message)
 
         # Thread-safe queue for streaming events
         event_queue = queue.Queue()
@@ -1267,8 +1644,11 @@ def flask_app():
                             mode, chunk_data = chunk
                             if mode == "custom" and isinstance(chunk_data, dict):
                                 if "progress" in chunk_data:
+                                    progress_event = chunk_data["progress"]
                                     # Push progress event to queue immediately
-                                    event_queue.put(chunk_data["progress"])
+                                    event_queue.put(progress_event)
+                                    # Also update job state for reconnection
+                                    update_job_progress(job_id, progress_event)
                             elif mode == "updates" and isinstance(chunk_data, dict):
                                 # Check for final message in updates
                                 if "chat" in chunk_data:
@@ -1289,7 +1669,9 @@ def flask_app():
 
                 # Push final message
                 if final_content:
-                    event_queue.put({"type": "message", "content": final_content})
+                    msg_event = {"type": "message", "content": final_content}
+                    event_queue.put(msg_event)
+                    update_job_progress(job_id, msg_event)
                 else:
                     # Fallback: get message from state
                     agent = get_or_create_agent(thread_id)
@@ -1298,21 +1680,29 @@ def flask_app():
                     if state.values.get("messages"):
                         last_msg = state.values["messages"][-1]
                         if isinstance(last_msg, AIMessage):
-                            event_queue.put({"type": "message", "content": last_msg.content})
+                            msg_event = {"type": "message", "content": last_msg.content}
+                            event_queue.put(msg_event)
+                            update_job_progress(job_id, msg_event)
 
                 # Signal completion
                 event_queue.put({"type": "done"})
+                update_job_progress(job_id, {"type": "complete"})
 
             except Exception as e:
                 import traceback
 
                 print(f"[ChatStream] Error: {e}")
                 print(f"[ChatStream] Traceback: {traceback.format_exc()}")
-                event_queue.put({"type": "error", "message": str(e)})
+                error_event = {"type": "error", "message": str(e)}
+                event_queue.put(error_event)
                 event_queue.put({"type": "done"})
+                update_job_progress(job_id, error_event)
 
         def generate():
             """Generator that yields SSE events from the queue."""
+            # First, send the job ID so client can save it for reconnection
+            yield f"data: {json.dumps({'type': 'job_id', 'job_id': job_id})}\n\n"
+
             # Start the agent in a background thread
             agent_thread = threading.Thread(target=run_agent_async)
             agent_thread.start()
@@ -1346,6 +1736,14 @@ def flask_app():
                 "Connection": "keep-alive",
             },
         )
+
+    @flask_app.route("/api/job/<job_id>/status", methods=["GET"])
+    def job_status(job_id):
+        """Get the current status of a job for reconnection."""
+        job = get_job_status(job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        return jsonify(job)
 
     @flask_app.route("/api/reset", methods=["POST"])
     def reset():
