@@ -85,16 +85,6 @@ def flask_app():
             color: rgba(255,255,255,0.4);
         }
         .header .subtitle { display: none; }
-        .modal-badge {
-            background: rgba(99, 102, 241, 0.2);
-            color: rgba(129, 140, 248, 0.9);
-            padding: 3px 8px;
-            border-radius: 2px;
-            font-size: 0.65rem;
-            margin-left: 8px;
-            vertical-align: middle;
-            border: 1px solid rgba(99, 102, 241, 0.3);
-        }
         .main-container {
             flex: 1;
             display: flex;
@@ -562,7 +552,7 @@ def flask_app():
 </head>
 <body>
     <div class="header">
-        <h1>superstore-use <span class="modal-badge">Modal</span></h1>
+        <h1>superstore-use</h1>
     </div>
     <div class="main-container">
         <div class="chat-container">
@@ -833,33 +823,73 @@ def flask_app():
             document.getElementById('message-input').value = '';
             addMessage(message, 'user');
             setInputEnabled(false);
-            showTyping();
+
+            // Hide suggestions after first message
+            document.getElementById('suggestions').style.display = 'none';
+
+            // Create progress indicator (same as sendMessage)
+            const progressDiv = document.createElement('div');
+            progressDiv.className = 'message assistant';
+            progressDiv.id = 'current-progress';
+            progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+            document.getElementById('messages').appendChild(progressDiv);
+            scrollToBottom();
+
+            let itemsProcessed = [];
 
             try {
-                const response = await fetch('/api/chat', {
+                // Use streaming endpoint (same as sendMessage)
+                const response = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ thread_id: threadId, message: message })
                 });
 
-                const data = await response.json();
-                hideTyping();
+                if (!response.ok) {
+                    throw new Error(`HTTP error: ${response.status}`);
+                }
 
-                if (data.error) {
-                    addMessage('Error: ' + data.error, 'error');
-                } else if (data.message) {
-                    addMessage(data.message, 'assistant');
-                    // Clear the list after successful addition
-                    if (!data.message.toLowerCase().includes('error') &&
-                        !data.message.toLowerCase().includes('failed')) {
-                        groceryList = [];
-                        renderGroceryList();
-                        saveListToStorage();
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let shouldClearList = false;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\\n\\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const event = JSON.parse(line.slice(6));
+                                handleStreamEvent(event, progressDiv, itemsProcessed);
+
+                                // Track if we should clear the list (on successful completion)
+                                if (event.type === 'complete' && event.success_count > 0) {
+                                    shouldClearList = true;
+                                }
+                            } catch (e) {
+                                console.error('Failed to parse SSE event:', e);
+                            }
+                        }
                     }
                 }
+
+                // Clear the grocery list after successful addition
+                if (shouldClearList) {
+                    groceryList = [];
+                    renderGroceryList();
+                    saveListToStorage();
+                }
+
             } catch (error) {
-                hideTyping();
+                progressDiv.remove();
                 addMessage('Error: Failed to add items to cart. Please try again.', 'error');
+                console.error('Streaming error:', error);
             }
 
             setInputEnabled(true);
@@ -1039,11 +1069,16 @@ def flask_app():
 
             // Show in-progress items with their current step
             for (const [item, progress] of Object.entries(itemStepProgress)) {
-                const stepText = progress.step > 0 ? `Step ${progress.step}` : 'Starting';
-                const actionText = progress.action ? `: ${progress.action}` : '';
+                let statusText = 'In Progress';
+                if (progress.step > 0) {
+                    statusText = `Step ${progress.step}`;
+                    if (progress.action && progress.action !== 'Starting...') {
+                        statusText += `: ${progress.action.substring(0, 40)}`;
+                    }
+                }
                 html += `<div style="opacity: 0.7;">`;
                 html += `<span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span>`;
-                html += `${escapeHtml(item)} <span style="font-size: 0.7rem; opacity: 0.6;">${stepText}${escapeHtml(actionText.substring(0, 40))}</span>`;
+                html += `${escapeHtml(item)} <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
                 html += `</div>`;
             }
 

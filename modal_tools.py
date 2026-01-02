@@ -142,7 +142,11 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
         return "No items provided to add to cart."
 
     # Ensure logged in before adding items
-    yield {"type": "status", "message": "Checking login status..."}
+    global _logged_in
+    if _logged_in:
+        yield {"type": "status", "message": "Already logged in"}
+    else:
+        yield {"type": "status", "message": "Logging in to Superstore... (this may take a minute)"}
 
     login_ok, login_msg = _ensure_logged_in()
     if not login_ok:
@@ -150,6 +154,13 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
         return f"Cannot add items: {login_msg}"
 
     total = len(items)
+
+    # Emit status first, then item_start events (so items display isn't wiped out by status)
+    yield {
+        "type": "status",
+        "message": f"Adding {total} items in parallel...",
+        "total": total,
+    }
 
     # Emit item_start events for all items upfront (they'll process in parallel)
     for i, item in enumerate(items, 1):
@@ -160,12 +171,6 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
             "total": total,
             "started": i,
         }
-
-    yield {
-        "type": "status",
-        "message": f"Adding {total} items in parallel...",
-        "total": total,
-    }
 
     try:
         # Use the non-streaming version with starmap for parallel execution

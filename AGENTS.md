@@ -83,3 +83,47 @@ uv run main.py
 ```bash
 uv run app.py  # Access at http://localhost:5000
 ```
+
+## Modal Deployment
+
+See `agent_docs/modal.md` for detailed Modal rules and guidelines.
+
+**Deploy chat app to Modal:**
+```bash
+uv run modal deploy modal_chat_app.py
+```
+
+**Serve locally with hot-reload (for development):**
+```bash
+uv run modal serve modal_chat_app.py  # Ctrl+C to stop
+```
+
+**Run a Modal app (one-off execution):**
+```bash
+uv run modal run modal_chat_app.py
+```
+
+**View deployed apps:**
+```bash
+uv run modal app list
+```
+
+**Stream logs for deployed app:**
+```bash
+uv run modal app logs superstore-chat-agent  # Ctrl+C to stop
+```
+
+**Stop a deployed app:**
+```bash
+uv run modal app stop superstore-chat-agent
+```
+
+**Get help on any command:**
+```bash
+uv run modal --help
+uv run modal app --help
+```
+
+**Dashboard:** https://modal.com/apps
+
+**Documentation:** https://modal.com/docs (or https://modal.com/llms-full.txt for LLM-friendly format)
