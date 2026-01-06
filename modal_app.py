@@ -316,6 +316,13 @@ def add_item_remote_streaming(item: str, index: int):
             await browser.kill()
             print(f"[Container {index}] Browser closed")
 
+            # Commit volume to persist cart state
+            try:
+                session_volume.commit()
+                print(f"[Container {index}] Volume committed - cart state persisted")
+            except Exception as e:
+                print(f"[Container {index}] Warning: Volume commit failed: {e}")
+
     def run_async():
         """Run async code in a thread so generator can yield during execution."""
         try:
@@ -462,6 +469,13 @@ def add_item_remote(item: str, index: int) -> dict:
             print(f"[Container {index}] Cleaning up browser...")
             await browser.kill()
             print(f"[Container {index}] Browser closed")
+
+            # Commit volume to persist cart state
+            try:
+                session_volume.commit()
+                print(f"[Container {index}] Volume committed - cart state persisted")
+            except Exception as e:
+                print(f"[Container {index}] Warning: Volume commit failed: {e}")
 
     return asyncio.run(_add_item())
 
