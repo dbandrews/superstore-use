@@ -1,3 +1,14 @@
+"""
+Modal deployment for the Superstore Shopping Agent.
+
+Single unified deployment with:
+- Core browser automation functions (login, add items)
+- Chat-based web UI with LangGraph agent
+
+Deploy with: modal deploy modal_app.py
+Run locally: modal serve modal_app.py
+"""
+
 import asyncio
 import json
 import os
@@ -7,10 +18,46 @@ from typing import Optional
 
 import modal
 
-app = modal.App("superstore-shopping-agent")
+# =============================================================================
+# Modal App Configuration
+# =============================================================================
 
-# Create a persistent volume for storing session cookies
+app = modal.App("superstore-agent")
+
+# Persistent volume for storing session cookies
 session_volume = modal.Volume.from_name("superstore-session", create_if_missing=True)
+
+# Distributed Dict for storing job state (persists across function invocations)
+job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=True)
+
+
+# =============================================================================
+# Shared Configuration (duplicated from core for Modal image build)
+# =============================================================================
+
+# Stealth arguments to avoid bot detection
+STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-dev-shm-usage",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-web-security",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--disable-accelerated-2d-canvas",
+    "--disable-gpu",
+    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
+
+# Success indicators for detecting if item was added to cart
+SUCCESS_INDICATORS = [
+    "added to cart",
+    "add to cart",
+    "item added",
+    "cart updated",
+    "in your cart",
+    "added to your cart",
+    "quantity updated",
+]
 
 
 def get_proxy_config() -> Optional[dict]:
@@ -25,21 +72,10 @@ def get_proxy_config() -> Optional[dict]:
     return {"server": proxy_server, "username": proxy_username, "password": proxy_password}
 
 
-# Stealth arguments to avoid bot detection (shared with login.py)
-STEALTH_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-    "--disable-dev-shm-usage",
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-web-security",
-    "--disable-features=IsolateOrigins,site-per-process",
-    "--disable-accelerated-2d-canvas",
-    "--disable-gpu",
-    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
+# =============================================================================
+# Modal Image Definition
+# =============================================================================
 
-
-# Image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install(
@@ -76,8 +112,6 @@ image = (
         "mkdir -p /ms-playwright",
         "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright uv run playwright install chromium",
         # Workaround for browser-use bug: https://github.com/browser-use/browser-use/issues/3779
-        # Fixed in PR #3778 but not yet released (as of 0.11.2)
-        # Can remove once browser-use properly detects chrome-linux64/
         """bash -c 'for dir in /ms-playwright/chromium-*/; do \
             if [ -d "${dir}chrome-linux64" ] && [ ! -e "${dir}chrome-linux" ]; then \
                 ln -s chrome-linux64 "${dir}chrome-linux"; \
@@ -85,16 +119,33 @@ image = (
         done'""",
     )
     # Copy the local browser profile directory as a fallback profile
-    # This is used by create_browser(shared_profile=False) for isolated containers
-    # For persistent login across containers, use /session/profile on the volume instead
     .add_local_dir(
         "./superstore-profile",
         remote_path="/app/superstore-profile",
         copy=True,
     )
-    # Copy login.py so login_remote() can import it
-    .add_local_file("login.py", remote_path="/root/login.py")
+    # Add core module for shared utilities
+    .add_local_python_source("core")
 )
+
+# Lighter image for chat UI (doesn't need browser)
+chat_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install(
+        "flask",
+        "langchain-core",
+        "langchain-openai",
+        "langgraph",
+        "python-dotenv",
+        "modal",
+    )
+    .add_local_python_source("core")
+)
+
+
+# =============================================================================
+# Browser Creation (Modal-specific)
+# =============================================================================
 
 
 def create_browser(shared_profile: bool = False):
@@ -132,29 +183,13 @@ def create_browser(shared_profile: bool = False):
     )
 
 
-# Store for tracking job statuses (in-memory, reset on container restart)
-jobs = {}
-checkout_browser = None
-
-
-# Success indicators for detecting if item was added to cart
-SUCCESS_INDICATORS = [
-    "added to cart",
-    "add to cart",
-    "item added",
-    "cart updated",
-    "in your cart",
-    "added to your cart",
-    "quantity updated",
-]
+# =============================================================================
+# Success Detection
+# =============================================================================
 
 
 def detect_success_from_history(agent) -> tuple[bool, str | None]:
-    """Parse browser-use agent history to detect if item was added successfully.
-
-    Returns:
-        tuple: (success: bool, evidence: str | None)
-    """
+    """Parse browser-use agent history to detect if item was added successfully."""
     try:
         extracted = agent.history.extracted_content()
         for content in extracted:
@@ -163,14 +198,12 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
                 if indicator in content_lower:
                     return True, str(content)[:100]
 
-        # Also check model thoughts for success indicators
         thoughts = agent.history.model_thoughts()
         for thought in thoughts:
             thought_lower = str(thought).lower()
             if any(ind in thought_lower for ind in SUCCESS_INDICATORS):
                 return True, str(thought)[:100]
 
-        # Check if we ended up on cart page
         urls = agent.history.urls()
         if urls and "cart" in urls[-1].lower():
             return True, f"Ended on cart page: {urls[-1]}"
@@ -179,6 +212,170 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
         print(f"[Success Detection] Error: {e}")
 
     return False, None
+
+
+# =============================================================================
+# Core Modal Functions
+# =============================================================================
+
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
+    ],
+    volumes={"/session": session_volume},
+    timeout=600,
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "IN_DOCKER": "True",
+    },
+    cpu=1,
+    memory=4096,
+)
+def login_remote() -> dict:
+    """Log in to Superstore and save session to shared volume.
+
+    This must be called before add_item_remote will work.
+    """
+    from browser_use import Agent, ChatOpenAI
+
+    async def _login():
+        username = os.environ.get("SUPERSTORE_USER")
+        password = os.environ.get("SUPERSTORE_PASSWORD")
+
+        if not username or not password:
+            return {"status": "failed", "message": "Missing credentials"}
+
+        print("[Login] Starting login process on Modal...")
+        print(f"[Login] Profile: /session/profile")
+
+        browser = create_browser(shared_profile=True)
+
+        try:
+            agent = Agent(
+                task=f"""
+                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
+
+                Steps:
+                1. Go to https://www.realcanadiansuperstore.ca/en
+                2. If you see "My Shop" and "let's get started by shopping your regulars",
+                   you are already logged in - call done.
+                3. Otherwise, click "Sign in" at top right.
+                4. Enter username: {username}
+                5. Enter password: {password}
+                6. Click the sign in button.
+                7. Wait for "My Account" at top right to confirm login.
+
+                Complete when logged in.
+                """,
+                llm=ChatOpenAI(model="gpt-4.1"),
+                browser_session=browser,
+            )
+
+            await agent.run(max_steps=50)
+
+            # Commit the volume to persist session
+            session_volume.commit()
+            print("[Login] Session committed to Modal volume.")
+
+            return {"status": "success", "message": "Login successful"}
+
+        except Exception as e:
+            print(f"[Login] Error: {e}")
+            return {"status": "failed", "message": str(e)}
+        finally:
+            await browser.kill()
+
+    return asyncio.run(_login())
+
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
+    ],
+    volumes={"/session": session_volume},
+    timeout=600,
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "IN_DOCKER": "True",
+    },
+    cpu=1,
+    memory=4096,
+)
+def add_item_remote(item: str, index: int) -> dict:
+    """Add a single item to cart in a separate Modal container (parallelizable).
+
+    Uses shared profile on volume (created by login_remote).
+    """
+    from browser_use import Agent, ChatOpenAI
+
+    async def _add_item():
+        print(f"[Container {index}] Starting to add item: {item}")
+        browser = create_browser(shared_profile=True)
+
+        try:
+            agent = Agent(
+                task=f"""
+                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
+
+                Go to https://www.realcanadiansuperstore.ca/en.
+
+                IMPORTANT: Before starting, check the page contains "My Shop" and "let's get started by shopping your regulars".
+                If you see these, you are already logged in.
+
+                Steps:
+                1. Use the search bar to search for "{item}"
+                2. From the search results, select the most relevant item
+                3. Click "Add to Cart" or similar button
+                4. Wait for confirmation that item was added (look for cart update or confirmation message)
+
+                Complete when you see confirmation the item was added to cart.
+
+                NOTE: If you see a login page or are not logged in, report this as an error.
+                """,
+                llm=ChatOpenAI(model="gpt-4.1"),
+                browser_session=browser,
+            )
+
+            await agent.run(max_steps=30)
+
+            success, evidence = detect_success_from_history(agent)
+
+            if success:
+                print(f"[Container {index}] SUCCESS: {evidence}")
+                return {
+                    "item": item,
+                    "index": index,
+                    "status": "success",
+                    "message": f"Added {item}",
+                    "evidence": evidence,
+                }
+            else:
+                print(f"[Container {index}] No success indicator found")
+                return {
+                    "item": item,
+                    "index": index,
+                    "status": "uncertain",
+                    "message": f"Completed but could not confirm {item} was added",
+                }
+
+        except Exception as e:
+            print(f"[Container {index}] ERROR: {e}")
+            return {"item": item, "index": index, "status": "failed", "message": str(e)}
+        finally:
+            await browser.kill()
+
+    return asyncio.run(_add_item())
 
 
 @app.function(
@@ -200,86 +397,25 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
     memory=4096,
 )
 def add_item_remote_streaming(item: str, index: int):
-    """Generator version that yields JSON progress events in real-time.
-
-    Uses a separate thread for async work so we can yield step progress
-    as the agent executes, not just at start and end.
-
-    Yields:
-        JSON strings with progress events:
-        - {"type": "start", "item": item, "index": index}
-        - {"type": "step", "item": item, "index": index, "step": N, "action": str}
-        - {"type": "complete", "item": item, "status": "success"|"failed", ...}
-    """
-    import json
+    """Generator version that yields JSON progress events in real-time."""
     import queue
     import threading
 
     from browser_use import Agent, ChatOpenAI
 
-    # Thread-safe queue for step progress events
     step_events: queue.Queue[dict] = queue.Queue()
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
 
     async def _add_item():
-        """Async function that runs the browser agent and pushes step events to queue."""
-        import shutil
-        import tempfile
-
         print(f"[Container {index}] Starting to add item: {item}")
-
-        profile_exists = os.path.exists("/session/profile")
-        print(f"[Container {index}] Shared profile exists: {profile_exists}")
-
-        # Copy shared profile to temporary directory to avoid profile locking
-        # (multiple browsers cannot use the same Chrome profile simultaneously)
-        temp_dir = tempfile.mkdtemp(prefix=f"worker-{index}-")
-        temp_profile = os.path.join(temp_dir, "profile")
-
-        if profile_exists:
-            print(f"[Container {index}] Copying shared profile to temporary directory...")
-            shutil.copytree("/session/profile", temp_profile, dirs_exist_ok=True)
-            print(f"[Container {index}] Profile copied to {temp_profile}")
-        else:
-            print(f"[Container {index}] WARNING: No shared profile found, creating empty profile")
-            os.makedirs(temp_profile, exist_ok=True)
-
-        # Use temporary profile copy (has login cookies from shared profile)
-        print(f"[Container {index}] Creating browser with profile copy...")
-        from browser_use import Browser
-        from browser_use.browser.profile import ProxySettings
-
-        proxy_config = get_proxy_config()
-        proxy_settings = None
-        if proxy_config:
-            proxy_settings = ProxySettings(
-                server=proxy_config["server"],
-                username=proxy_config["username"],
-                password=proxy_config["password"],
-            )
-
-        browser = Browser(
-            headless=True,
-            window_size={"width": 1920, "height": 1080},
-            wait_between_actions=1.5,
-            minimum_wait_page_load_time=1.5,
-            wait_for_network_idle_page_load_time=1.5,
-            user_data_dir=temp_profile,
-            proxy=proxy_settings,
-            args=STEALTH_ARGS,
-        )
-
+        browser = create_browser(shared_profile=True)
         step_count = 0
 
         async def on_step_end(agent):
-            """Push step progress to the queue for streaming."""
             nonlocal step_count
             step_count += 1
             actions = agent.history.model_actions()
             action_str = str(actions[-1])[:80] if actions else "..."
-            print(f"[Container {index}] Step {step_count}: {action_str}")
-
-            # Push step event to queue for yielding
             step_events.put({
                 "type": "step",
                 "item": item,
@@ -289,35 +425,28 @@ def add_item_remote_streaming(item: str, index: int):
             })
 
         try:
-            print(f"[Container {index}] Browser created, initializing agent...")
             agent = Agent(
                 task=f"""
                 You need to add "{item}" to the shopping cart on Real Canadian Superstore.
-
-                You should already be logged in. Go to https://www.realcanadiansuperstore.ca/en
+                Go to https://www.realcanadiansuperstore.ca/en
 
                 Steps:
                 1. Use the search bar to search for "{item}"
                 2. From the search results, select the most relevant item
                 3. Click "Add to Cart" or similar button
-                4. Wait for confirmation that item was added (look for cart update or confirmation message)
+                4. Wait for confirmation that item was added
 
                 Complete when you see confirmation the item was added to cart.
-
-                NOTE: If you see a login page or are not logged in, report this as an error - the session should already be authenticated.
                 """,
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
 
-            print(f"[Container {index}] Running agent (max 30 steps)...")
             await agent.run(max_steps=30, on_step_end=on_step_end)
 
-            # Detect success from agent history
             success, evidence = detect_success_from_history(agent)
 
             if success:
-                print(f"[Container {index}] SUCCESS detected: {evidence}")
                 return {
                     "item": item,
                     "index": index,
@@ -327,7 +456,6 @@ def add_item_remote_streaming(item: str, index: int):
                     "steps": step_count,
                 }
             else:
-                print(f"[Container {index}] No success indicator found after {step_count} steps")
                 return {
                     "item": item,
                     "index": index,
@@ -337,54 +465,34 @@ def add_item_remote_streaming(item: str, index: int):
                 }
 
         except Exception as e:
-            error_msg = str(e)
-            print(f"[Container {index}] ERROR: {error_msg}")
-            import traceback
-
-            print(f"[Container {index}] Traceback: {traceback.format_exc()}")
             return {
                 "item": item,
                 "index": index,
                 "status": "failed",
-                "message": error_msg,
+                "message": str(e),
                 "steps": step_count,
             }
         finally:
-            print(f"[Container {index}] Cleaning up browser...")
             await browser.kill()
-            print(f"[Container {index}] Browser closed")
-
-            # Clean up temporary profile directory
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                print(f"[Container {index}] Temporary profile cleaned up")
-            except Exception as e:
-                print(f"[Container {index}] Warning: Failed to clean up temp profile: {e}")
 
     def run_async():
-        """Run async code in a thread so generator can yield during execution."""
         try:
             result_holder["result"] = asyncio.run(_add_item())
         except Exception as e:
             result_holder["error"] = str(e)
 
-    # Start async work in a separate thread
     worker_thread = threading.Thread(target=run_async)
     worker_thread.start()
 
-    # Yield start event immediately
     yield json.dumps({"type": "start", "item": item, "index": index})
 
-    # Poll for step events while the async work is running
     while worker_thread.is_alive():
         try:
-            # Short timeout so we can check if thread is still alive
             event = step_events.get(timeout=0.5)
             yield json.dumps(event)
         except queue.Empty:
             pass
 
-    # Drain any remaining step events
     while not step_events.empty():
         try:
             event = step_events.get_nowait()
@@ -392,7 +500,6 @@ def add_item_remote_streaming(item: str, index: int):
         except queue.Empty:
             break
 
-    # Yield final result
     if result_holder["error"]:
         yield json.dumps({
             "type": "complete",
@@ -402,7 +509,7 @@ def add_item_remote_streaming(item: str, index: int):
             "message": result_holder["error"],
             "steps": 0,
         })
-    elif result_holder["result"] and isinstance(result_holder["result"], dict):
+    elif result_holder["result"]:
         yield json.dumps({"type": "complete", **result_holder["result"]})
     else:
         yield json.dumps({
@@ -410,727 +517,568 @@ def add_item_remote_streaming(item: str, index: int):
             "item": item,
             "index": index,
             "status": "failed",
-            "message": "Unknown error - no result returned",
+            "message": "Unknown error",
             "steps": 0,
         })
 
 
+# =============================================================================
+# Chat UI Flask App
+# =============================================================================
+
+
 @app.function(
-    image=image,
-    secrets=[
-        modal.Secret.from_name("openai-secret"),
-        modal.Secret.from_name("oxy-proxy"),
-        modal.Secret.from_name("superstore"),
-    ],
-    volumes={"/session": session_volume},  # Shared profile for persistent login
-    timeout=600,  # 10 minute timeout per item
-    env={
-        "TIMEOUT_BrowserStartEvent": "120",
-        "TIMEOUT_BrowserLaunchEvent": "120",
-        "TIMEOUT_BrowserStateRequestEvent": "120",
-        "IN_DOCKER": "True",  # Required for browser-use in containers
-    },
+    image=chat_image,
+    secrets=[modal.Secret.from_name("openai-secret")],
+    timeout=600,
     cpu=1,
-    memory=4096,
-)
-def add_item_remote(item: str, index: int) -> dict:
-    """Add a single item to cart in a separate Modal container (parallelizable).
-
-    Uses shared profile on volume for persistent login across containers.
-    Uses success detection from agent history to verify item was added.
-    """
-    from browser_use import Agent, ChatOpenAI
-
-    async def _add_item():
-        import shutil
-        import tempfile
-
-        print(f"[Container {index}] Starting to add item: {item}")
-
-        # Check if shared profile exists (indicates login has been done)
-        profile_exists = os.path.exists("/session/profile")
-        print(f"[Container {index}] Shared profile exists: {profile_exists}")
-
-        # Copy shared profile to temporary directory to avoid profile locking
-        # (multiple browsers cannot use the same Chrome profile simultaneously)
-        temp_dir = tempfile.mkdtemp(prefix=f"worker-{index}-")
-        temp_profile = os.path.join(temp_dir, "profile")
-
-        if profile_exists:
-            print(f"[Container {index}] Copying shared profile to temporary directory...")
-            shutil.copytree("/session/profile", temp_profile, dirs_exist_ok=True)
-            print(f"[Container {index}] Profile copied to {temp_profile}")
-        else:
-            print(f"[Container {index}] WARNING: No shared profile found, creating empty profile")
-            os.makedirs(temp_profile, exist_ok=True)
-
-        # Use temporary profile copy (has login cookies from shared profile)
-        print(f"[Container {index}] Creating browser with profile copy...")
-        from browser_use import Browser
-        from browser_use.browser.profile import ProxySettings
-
-        proxy_config = get_proxy_config()
-        proxy_settings = None
-        if proxy_config:
-            proxy_settings = ProxySettings(
-                server=proxy_config["server"],
-                username=proxy_config["username"],
-                password=proxy_config["password"],
-            )
-
-        browser = Browser(
-            headless=True,
-            window_size={"width": 1920, "height": 1080},
-            wait_between_actions=1.5,
-            minimum_wait_page_load_time=1.5,
-            wait_for_network_idle_page_load_time=1.5,
-            user_data_dir=temp_profile,
-            proxy=proxy_settings,
-            args=STEALTH_ARGS,
-        )
-        try:
-            print(f"[Container {index}] Browser created, initializing agent...")
-            agent = Agent(
-                task=f"""
-                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
-
-                You should already be logged in. Go to https://www.realcanadiansuperstore.ca/en
-
-                Steps:
-                1. Use the search bar to search for "{item}"
-                2. From the search results, select the most relevant item
-                3. Click "Add to Cart" or similar button
-                4. Wait for confirmation that item was added (look for cart update or confirmation message)
-
-                Complete when you see confirmation the item was added to cart.
-
-                NOTE: If you see a login page or are not logged in, report this as an error - the session should already be authenticated.
-                """,
-                llm=ChatOpenAI(model="gpt-4.1"),
-                browser_session=browser,
-            )
-            print(f"[Container {index}] Running agent (max 30 steps)...")
-            await agent.run(max_steps=30)
-
-            # Detect success from agent history
-            success, evidence = detect_success_from_history(agent)
-
-            if success:
-                print(f"[Container {index}] SUCCESS detected: {evidence}")
-                return {
-                    "item": item,
-                    "index": index,
-                    "status": "success",
-                    "message": f"Added {item}",
-                    "evidence": evidence,
-                }
-            else:
-                print(f"[Container {index}] No success indicator found")
-                return {
-                    "item": item,
-                    "index": index,
-                    "status": "uncertain",
-                    "message": f"Completed but could not confirm {item} was added",
-                }
-
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[Container {index}] ERROR: {error_msg}")
-            import traceback
-
-            print(f"[Container {index}] Traceback: {traceback.format_exc()}")
-            return {"item": item, "index": index, "status": "failed", "message": error_msg}
-        finally:
-            print(f"[Container {index}] Cleaning up browser...")
-            await browser.kill()
-            print(f"[Container {index}] Browser closed")
-
-            # Clean up temporary profile directory
-            import shutil
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                print(f"[Container {index}] Temporary profile cleaned up")
-            except Exception as e:
-                print(f"[Container {index}] Warning: Failed to clean up temp profile: {e}")
-
-    return asyncio.run(_add_item())
-
-
-@app.function(
-    image=image,
-    secrets=[
-        modal.Secret.from_name("openai-secret"),
-        modal.Secret.from_name("oxy-proxy"),
-        modal.Secret.from_name("superstore"),
-    ],
-    volumes={"/session": session_volume},
-    timeout=600,  # 10 minute timeout for login
-    env={
-        "TIMEOUT_BrowserStartEvent": "120",
-        "TIMEOUT_BrowserLaunchEvent": "120",
-        "TIMEOUT_BrowserStateRequestEvent": "120",
-        "IN_DOCKER": "True",
-    },
-    cpu=1,
-    memory=4096,
-)
-def login_remote() -> dict:
-    """Log in to Superstore and save session to shared volume.
-
-    This must be called before add_item_remote will work.
-    Uses the shared login_and_save() function from login.py which
-    automatically detects Modal environment and saves to /session/profile.
-    """
-    from login import login_and_save
-
-    print("[Login] Starting login process on Modal...")
-    result = asyncio.run(login_and_save())
-    print(f"[Login] Login completed with status: {result.get('status')}")
-    return result
-
-
-def run_add_items_job(job_id: str, items: list[str]):
-    """Add items to cart in parallel using separate Modal containers.
-
-    Each container shares the same login session via volume mount.
-    """
-    jobs[job_id]["status"] = "running"
-    jobs[job_id]["total"] = len(items)
-    jobs[job_id]["completed"] = 0
-    jobs[job_id]["results"] = []
-
-    print(f"[AddItems Job {job_id}] Starting parallel execution with {len(items)} items")
-
-    # Create inputs for starmap: [(item, index), ...]
-    inputs = [(item, i) for i, item in enumerate(items, 1)]
-
-    # Process items in parallel across Modal containers
-    # Each container will use the shared profile on the volume
-    for result in add_item_remote.starmap(inputs, order_outputs=False):
-        print(f"[AddItems Job {job_id}] Got result: {result}")
-        jobs[job_id]["results"].append(result)
-        jobs[job_id]["completed"] += 1
-
-    jobs[job_id]["status"] = "completed"
-    print(f"[AddItems Job {job_id}] Job complete!")
-
-
-def run_checkout_job(job_id: str):
-    """Background thread for checkout process."""
-    from browser_use import Agent, ChatOpenAI
-
-    async def _checkout():
-        global checkout_browser
-        jobs[job_id]["status"] = "running"
-        jobs[job_id]["step"] = "Starting checkout..."
-
-        browser = create_browser()
-        checkout_browser = browser
-
-        try:
-            jobs[job_id]["step"] = "Navigating to cart..."
-
-            agent = Agent(
-                task="""
-                Go to https://www.realcanadiansuperstore.ca/ and proceed through the checkout process.
-                The cart option should be at top right of the main page.
-
-                Navigate through all checkout steps:
-                - Delivery details: Click "select a time" and pick the next available time slot.
-                - Item details
-                - Contact details
-                - Driver tip
-                - Payment
-
-                Each step will need interaction and need to hit "Save & Continue" after each one.
-                Stop when you reach the final order review page where the "Place Order" button is visible.
-                """,
-                llm=ChatOpenAI(model="gpt-4.1"),
-                browser_session=browser,
-            )
-
-            jobs[job_id]["step"] = "Processing checkout steps..."
-            await agent.run(max_steps=100)
-
-            jobs[job_id]["status"] = "awaiting_confirmation"
-            jobs[job_id]["step"] = "Ready to place order - awaiting confirmation"
-            jobs[job_id]["agent"] = agent
-
-        except Exception as e:
-            jobs[job_id]["status"] = "failed"
-            jobs[job_id]["step"] = f"Checkout failed: {str(e)}"
-            if browser:
-                await browser.kill()
-
-    asyncio.run(_checkout())
-
-
-def run_place_order_job(job_id: str, checkout_job_id: str):
-    """Place the final order."""
-    from browser_use import Agent, ChatOpenAI
-
-    async def _place_order():
-        global checkout_browser
-        jobs[job_id]["status"] = "running"
-        jobs[job_id]["step"] = "Placing order..."
-
-        try:
-            checkout_job = jobs.get(checkout_job_id)
-            if not checkout_job or "agent" not in checkout_job:
-                browser = create_browser()
-                agent = Agent(
-                    task="Go to https://www.realcanadiansuperstore.ca/, navigate to cart and click 'Place Order' button.",
-                    llm=ChatOpenAI(model="gpt-4.1"),
-                    browser_session=browser,
-                )
-                await agent.run(max_steps=20)
-                await browser.kill()
-            else:
-                agent = checkout_job["agent"]
-                agent.add_new_task("Click the 'Place Order' or 'Submit Order' button to complete the purchase.")
-                await agent.run(max_steps=10)
-                if checkout_browser:
-                    await checkout_browser.kill()
-                    checkout_browser = None
-
-            jobs[job_id]["status"] = "completed"
-            jobs[job_id]["step"] = "Order placed successfully!"
-
-        except Exception as e:
-            jobs[job_id]["status"] = "failed"
-            jobs[job_id]["step"] = f"Failed to place order: {str(e)}"
-
-    asyncio.run(_place_order())
-
-
-@app.function(
-    image=image,
-    secrets=[
-        modal.Secret.from_name("openai-secret"),
-        modal.Secret.from_name("oxy-proxy"),
-        modal.Secret.from_name("superstore"),
-    ],
-    timeout=3600,  # 1 hour timeout for long-running shopping sessions
-    env={
-        "TIMEOUT_BrowserStartEvent": "120",
-        "TIMEOUT_BrowserLaunchEvent": "120",
-        "TIMEOUT_BrowserStateRequestEvent": "120",
-        "IN_DOCKER": "True",  # Required for browser-use in containers
-    },
-    volumes={"/session": session_volume},  # Mount volume for persistent session
+    memory=2048,
 )
 @modal.wsgi_app()
 def flask_app():
+    """Flask app for the chat UI."""
     import time
 
     from flask import Flask, Response, jsonify, request
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from core.agent import create_chat_agent
 
     flask_app = Flask(__name__)
 
-    # Inline the template since we can't easily serve from templates folder
-    INDEX_HTML = """<!DOCTYPE html>
+    # Store agent instances per session
+    agents = {}
+
+    def get_or_create_agent(thread_id: str):
+        if thread_id not in agents:
+            agents[thread_id] = create_chat_agent()
+        return agents[thread_id]
+
+    # Job state management helpers
+    def create_job(thread_id: str, message: str) -> str:
+        job_id = str(uuid.uuid4())[:8]
+        job_state_dict[job_id] = {
+            "id": job_id,
+            "thread_id": thread_id,
+            "message": message,
+            "status": "running",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "items_processed": [],
+            "items_in_progress": {},
+            "final_message": None,
+            "error": None,
+        }
+        return job_id
+
+    def update_job_progress(job_id: str, event: dict):
+        try:
+            job = job_state_dict.get(job_id)
+            if not job:
+                return
+
+            event_type = event.get("type", "")
+            job["updated_at"] = time.time()
+
+            if event_type == "item_start":
+                job["items_in_progress"][event["item"]] = {"step": 0, "action": "Starting..."}
+            elif event_type == "step":
+                if event.get("item") in job["items_in_progress"]:
+                    job["items_in_progress"][event["item"]] = {
+                        "step": event.get("step", 0),
+                        "action": event.get("action", "...")
+                    }
+            elif event_type == "item_complete":
+                item_name = event.get("item")
+                if item_name in job["items_in_progress"]:
+                    del job["items_in_progress"][item_name]
+                job["items_processed"].append({
+                    "item": item_name,
+                    "status": event.get("status", "unknown"),
+                    "steps": event.get("steps", 0)
+                })
+            elif event_type == "complete":
+                job["status"] = "completed"
+                job["success_count"] = event.get("success_count", 0)
+            elif event_type == "message":
+                job["final_message"] = event.get("content")
+            elif event_type == "error":
+                job["status"] = "error"
+                job["error"] = event.get("message")
+
+            job_state_dict[job_id] = job
+        except Exception as e:
+            print(f"[JobState] Error updating job {job_id}: {e}")
+
+    def get_job_status(job_id: str) -> dict | None:
+        try:
+            job = job_state_dict.get(job_id)
+            if job and time.time() - job.get("created_at", 0) > 600:
+                job["status"] = "expired"
+            return job
+        except Exception:
+            return None
+
+    # Chat UI HTML template (inline for single-file deployment)
+    CHAT_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Superstore Shopping Agent</title>
+    <title>Superstore Shopping Assistant</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; min-height: 100vh; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        h1 { text-align: center; color: #333; margin-bottom: 20px; }
-        .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; margin-bottom: 20px; }
-        .card h2 { font-size: 1.1rem; color: #666; margin-bottom: 15px; }
-        textarea { width: 100%; height: 150px; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; resize: vertical; font-family: inherit; }
-        textarea:focus { outline: none; border-color: #e31837; }
-        .hint { font-size: 12px; color: #999; margin-top: 8px; }
-        .buttons { display: flex; gap: 10px; margin-top: 15px; }
-        button { flex: 1; padding: 12px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-primary { background: #e31837; color: white; }
-        .btn-primary:hover:not(:disabled) { background: #c41530; }
-        .btn-secondary { background: #333; color: white; }
-        .btn-secondary:hover:not(:disabled) { background: #444; }
-        .btn-success { background: #28a745; color: white; }
-        .btn-success:hover:not(:disabled) { background: #218838; }
-        .btn-danger { background: #dc3545; color: white; }
-        .btn-danger:hover:not(:disabled) { background: #c82333; }
-        .status-panel { display: none; }
-        .status-panel.active { display: block; }
-        .status-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-        .status-header h2 { margin: 0; }
-        .progress-bar { height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; margin-bottom: 15px; }
-        .progress-bar-fill { height: 100%; background: #e31837; transition: width 0.3s ease; }
-        .item-list { list-style: none; }
-        .item-list li { padding: 10px 0; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; }
-        .item-list li:last-child { border-bottom: none; }
-        .status-badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
-        .status-pending { background: #f0f0f0; color: #666; }
-        .status-processing { background: #fff3cd; color: #856404; }
-        .status-success { background: #d4edda; color: #155724; }
-        .status-failed { background: #f8d7da; color: #721c24; }
-        .checkout-status { text-align: center; padding: 20px; }
-        .checkout-status .step { font-size: 16px; color: #333; margin-bottom: 10px; }
-        .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #f3f3f3; border-top: 2px solid #e31837; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .confirmation-panel { text-align: center; padding: 20px; }
-        .confirmation-panel h3 { color: #333; margin-bottom: 10px; }
-        .confirmation-panel p { color: #666; margin-bottom: 20px; }
-        .confirmation-buttons { display: flex; gap: 10px; justify-content: center; }
-        .confirmation-buttons button { flex: none; min-width: 120px; }
-        .summary { background: #f9f9f9; padding: 15px; border-radius: 8px; margin-top: 15px; }
-        .summary-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
-        .summary-row.success { color: #28a745; }
-        .summary-row.failed { color: #dc3545; }
-        .modal-badge { background: #6366f1; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px; }
+        body {
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            background: #0d1117;
+            color: rgba(255,255,255,0.9);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: transparent;
+            padding: 20px 24px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .header h1 {
+            font-size: 0.75rem;
+            font-weight: 400;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.4);
+        }
+        .main-container { flex: 1; display: flex; overflow: hidden; }
+        .chat-container { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        .sidebar {
+            width: 280px;
+            background: rgba(255,255,255,0.02);
+            border-left: 1px solid rgba(255,255,255,0.06);
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .sidebar-header h2 {
+            font-size: 0.7rem;
+            font-weight: 400;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.4);
+        }
+        .item-count {
+            background: rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.6);
+            font-size: 0.65rem;
+            padding: 3px 8px;
+            border-radius: 2px;
+        }
+        .item-count.has-items { background: rgba(255,255,255,0.9); color: #0d1117; }
+        .grocery-list { flex: 1; overflow-y: auto; padding: 12px; }
+        .grocery-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 14px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.04);
+            border-radius: 4px;
+            margin-bottom: 6px;
+        }
+        .grocery-item .item-info { flex: 1; min-width: 0; }
+        .grocery-item .item-name { font-size: 0.8rem; color: rgba(255,255,255,0.8); }
+        .grocery-item .item-qty { font-size: 0.7rem; color: rgba(255,255,255,0.3); margin-top: 2px; }
+        .grocery-item .remove-btn { background: none; border: none; color: rgba(255,255,255,0.2); cursor: pointer; padding: 4px; font-size: 1rem; }
+        .grocery-item .remove-btn:hover { color: rgba(255,255,255,0.6); }
+        .grocery-item .edit-qty { display: flex; align-items: center; gap: 6px; margin-right: 10px; }
+        .grocery-item .qty-btn { width: 22px; height: 22px; border: 1px solid rgba(255,255,255,0.1); background: transparent; border-radius: 2px; cursor: pointer; font-size: 0.85rem; color: rgba(255,255,255,0.4); }
+        .grocery-item .qty-btn:hover { border-color: rgba(255,255,255,0.3); color: rgba(255,255,255,0.8); }
+        .grocery-item .qty-display { font-size: 0.75rem; min-width: 18px; text-align: center; color: rgba(255,255,255,0.6); }
+        .empty-list { text-align: center; padding: 40px 20px; color: rgba(255,255,255,0.25); }
+        .empty-list .icon { font-size: 1.5rem; margin-bottom: 12px; opacity: 0.5; }
+        .empty-list p { font-size: 0.75rem; }
+        .sidebar-footer { padding: 16px; border-top: 1px solid rgba(255,255,255,0.06); }
+        .add-item-form { display: flex; gap: 8px; margin-bottom: 10px; }
+        .add-item-form input { flex: 1; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; font-size: 0.8rem; font-family: inherit; background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.8); outline: none; }
+        .add-item-form input::placeholder { color: rgba(255,255,255,0.25); }
+        .add-item-form input:focus { border-color: rgba(255,255,255,0.2); }
+        .add-item-form button { padding: 10px 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; cursor: pointer; font-size: 0.9rem; color: rgba(255,255,255,0.5); }
+        .add-item-form button:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
+        .sidebar-actions { display: flex; gap: 8px; }
+        .clear-btn { flex: 1; padding: 11px; background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; font-size: 0.75rem; font-family: inherit; color: rgba(255,255,255,0.4); cursor: pointer; }
+        .clear-btn:hover { border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.7); }
+        .add-all-btn { flex: 2; padding: 11px; background: rgba(255,255,255,0.9); color: #0d1117; border: none; border-radius: 4px; font-size: 0.75rem; font-weight: 500; font-family: inherit; cursor: pointer; }
+        .add-all-btn:hover:not(:disabled) { background: rgba(255,255,255,1); }
+        .add-all-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .messages { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+        .message { max-width: 80%; padding: 14px 18px; border-radius: 4px; line-height: 1.6; white-space: pre-wrap; font-size: 0.85rem; }
+        .message.user { align-self: flex-end; background: rgba(255,255,255,0.9); color: #0d1117; }
+        .message.assistant { align-self: flex-start; background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.85); border: 1px solid rgba(255,255,255,0.06); }
+        .message.error { align-self: center; background: rgba(255,100,100,0.1); color: rgba(255,150,150,0.9); font-size: 0.8rem; border: 1px solid rgba(255,100,100,0.15); }
+        .typing-indicator { align-self: flex-start; background: rgba(255,255,255,0.05); padding: 14px 18px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.06); }
+        .typing-indicator span { display: inline-block; width: 6px; height: 6px; background: rgba(255,255,255,0.4); border-radius: 50%; margin-right: 4px; animation: pulse 1.4s infinite ease-in-out both; }
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes pulse { 0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
+        .input-area { padding: 20px 24px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; gap: 12px; }
+        .input-area input { flex: 1; padding: 14px 18px; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; font-size: 0.85rem; font-family: inherit; background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.9); outline: none; }
+        .input-area input::placeholder { color: rgba(255,255,255,0.25); }
+        .input-area input:focus { border-color: rgba(255,255,255,0.25); }
+        .input-area input:disabled { background: rgba(255,255,255,0.02); }
+        .input-area button { padding: 14px 28px; background: rgba(255,255,255,0.9); color: #0d1117; border: none; border-radius: 4px; font-size: 0.8rem; font-weight: 500; font-family: inherit; cursor: pointer; }
+        .input-area button:hover:not(:disabled) { background: rgba(255,255,255,1); }
+        .input-area button:disabled { opacity: 0.3; cursor: not-allowed; }
+        .suggestions { padding: 12px 24px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; flex-wrap: wrap; gap: 8px; }
+        .suggestion { padding: 8px 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; font-size: 0.75rem; color: rgba(255,255,255,0.5); cursor: pointer; }
+        .suggestion:hover { border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.8); }
+        @media (max-width: 768px) {
+            body { overflow: hidden; position: fixed; width: 100%; height: 100%; }
+            .main-container { flex-direction: column; height: calc(100vh - 53px); }
+            .messages { padding: 16px; padding-bottom: 130px; gap: 12px; }
+            .message { max-width: 90%; }
+            .suggestions { display: none; }
+            .input-area { position: fixed; bottom: 56px; left: 0; right: 0; background: #0d1117; z-index: 50; padding: 12px 16px; }
+            .input-area input { padding: 12px 14px; font-size: 16px; }
+            .sidebar { position: fixed; bottom: 0; left: 0; right: 0; width: 100%; height: auto; max-height: 70vh; border-left: none; border-top: 1px solid rgba(255,255,255,0.1); border-radius: 16px 16px 0 0; transform: translateY(calc(100% - 56px)); transition: transform 0.3s ease; z-index: 100; background: #0d1117; }
+            .sidebar.expanded { transform: translateY(0); }
+            .sidebar-header { cursor: pointer; padding-top: 20px; position: relative; }
+            .sidebar-header::before { content: ''; position: absolute; top: 8px; left: 50%; transform: translateX(-50%); width: 36px; height: 4px; background: rgba(255,255,255,0.15); border-radius: 2px; }
+            .sidebar-toggle-icon { display: inline-block; transition: transform 0.3s ease; color: rgba(255,255,255,0.4); font-size: 0.8rem; }
+            .sidebar.expanded .sidebar-toggle-icon { transform: rotate(180deg); }
+            .grocery-list { max-height: calc(70vh - 140px); }
+        }
+        @media (min-width: 769px) { .sidebar-toggle-icon { display: none; } }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Superstore Shopping Agent <span class="modal-badge">Modal</span></h1>
-        <div class="card" id="login-panel">
-            <h2>Session Status</h2>
-            <p id="login-status" style="margin-bottom: 15px; color: #666;">Click "Login" to authenticate before adding items.</p>
-            <div class="buttons">
-                <button class="btn-primary" id="login-btn" onclick="doLogin()">Login to Superstore</button>
+    <div class="header"><h1>superstore-use</h1></div>
+    <div class="main-container">
+        <div class="chat-container">
+            <div class="messages" id="messages">
+                <div class="message assistant">What would you like to cook or buy?</div>
+            </div>
+            <div class="suggestions" id="suggestions">
+                <span class="suggestion" onclick="sendSuggestion(this)">pasta carbonara</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">milk, eggs, bread</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">banana pancakes</span>
+            </div>
+            <div class="input-area">
+                <input type="text" id="message-input" placeholder="Message..." onkeypress="handleKeyPress(event)">
+                <button id="send-btn" onclick="sendMessage()">Send</button>
             </div>
         </div>
-        <div class="card" id="input-panel">
-            <h2>Enter your grocery items</h2>
-            <textarea id="items-input" placeholder="Enter each item on a new line, e.g.:
-Milk
-Bread
-Eggs
-Bananas"></textarea>
-            <p class="hint">One item per line. The agent will search and add each item to your cart.</p>
-            <div class="buttons">
-                <button class="btn-primary" id="add-to-cart-btn" onclick="addToCart()">Add to Cart</button>
-            </div>
-        </div>
-        <div class="card status-panel" id="cart-status-panel">
-            <div class="status-header">
-                <h2>Adding items to cart...</h2>
-                <span id="cart-progress-text">0/0</span>
-            </div>
-            <div class="progress-bar">
-                <div class="progress-bar-fill" id="cart-progress-bar" style="width: 0%"></div>
-            </div>
-            <ul class="item-list" id="item-status-list"></ul>
-            <div class="summary" id="cart-summary" style="display: none;">
-                <div class="summary-row success"><span>Successfully added:</span><span id="success-count">0</span></div>
-                <div class="summary-row failed"><span>Failed:</span><span id="failed-count">0</span></div>
-            </div>
-            <div class="buttons" id="checkout-buttons" style="display: none;">
-                <button class="btn-secondary" onclick="resetToInput()">Add More Items</button>
-                <button class="btn-primary" onclick="startCheckout()">Proceed to Checkout</button>
-            </div>
-        </div>
-        <div class="card status-panel" id="checkout-status-panel">
-            <h2>Checkout Progress</h2>
-            <div class="checkout-status">
-                <p class="step" id="checkout-step"><span class="spinner"></span>Initializing checkout...</p>
-            </div>
-        </div>
-        <div class="card status-panel" id="confirmation-panel">
-            <div class="confirmation-panel">
-                <h3>Ready to Place Order</h3>
-                <p>The checkout process is complete. Click "Place Order" to finalize.</p>
-                <div class="confirmation-buttons">
-                    <button class="btn-danger" onclick="cancelCheckout()">Cancel</button>
-                    <button class="btn-success" onclick="placeOrder()">Place Order</button>
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header" onclick="toggleSidebar()">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <h2>Grocery List</h2>
+                    <span class="sidebar-toggle-icon" id="toggle-icon">&#9650;</span>
                 </div>
+                <span class="item-count" id="item-count">0</span>
             </div>
-        </div>
-        <div class="card status-panel" id="complete-panel">
-            <div class="confirmation-panel">
-                <h3 id="complete-title">Order Placed!</h3>
-                <p id="complete-message">Your order has been successfully placed.</p>
-                <div class="buttons">
-                    <button class="btn-primary" onclick="resetToInput()">Start New Order</button>
+            <div class="grocery-list" id="grocery-list">
+                <div class="empty-list" id="empty-list"><div class="icon">—</div><p>No items yet</p></div>
+            </div>
+            <div class="sidebar-footer">
+                <div class="add-item-form">
+                    <input type="text" id="manual-item-input" placeholder="Add item..." onkeypress="handleManualItemKeyPress(event)">
+                    <button onclick="addManualItem()">+</button>
+                </div>
+                <div class="sidebar-actions">
+                    <button class="clear-btn" onclick="clearList()">Clear</button>
+                    <button class="add-all-btn" id="add-all-btn" onclick="addAllToCart()" disabled>Add to Cart</button>
                 </div>
             </div>
         </div>
     </div>
     <script>
-        let currentCartJobId = null;
-        let currentCheckoutJobId = null;
-        let items = [];
-        async function doLogin() {
-            const btn = document.getElementById('login-btn');
-            const status = document.getElementById('login-status');
-            btn.disabled = true;
-            btn.textContent = 'Logging in...';
-            status.innerHTML = '<span class="spinner"></span> Logging in to Superstore... (this may take a minute)';
-            status.style.color = '#856404';
-            try {
-                const response = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-                const data = await response.json();
-                if (data.status === 'success') {
-                    status.textContent = '✓ Logged in successfully! You can now add items.';
-                    status.style.color = '#28a745';
-                    btn.textContent = 'Logged In';
-                    btn.classList.remove('btn-primary');
-                    btn.classList.add('btn-success');
-                } else {
-                    status.textContent = '✗ Login failed: ' + data.message;
-                    status.style.color = '#dc3545';
-                    btn.textContent = 'Retry Login';
-                    btn.disabled = false;
+        const threadId = 'session-' + Math.random().toString(36).substr(2, 9);
+        let isProcessing = false;
+        let groceryList = [];
+        let currentJobId = null;
+
+        function saveJobId(jobId) { currentJobId = jobId; localStorage.setItem('currentJobId_' + threadId, jobId); localStorage.setItem('currentJobTime_' + threadId, Date.now().toString()); }
+        function clearJobId() { currentJobId = null; localStorage.removeItem('currentJobId_' + threadId); localStorage.removeItem('currentJobTime_' + threadId); }
+        function getSavedJobId() { const jobId = localStorage.getItem('currentJobId_' + threadId); const jobTime = localStorage.getItem('currentJobTime_' + threadId); if (jobId && jobTime && (Date.now() - parseInt(jobTime)) < 600000) return jobId; return null; }
+
+        async function pollJobStatus(jobId) { try { const r = await fetch(`/api/job/${jobId}/status`); return r.ok ? await r.json() : null; } catch (e) { return null; } }
+
+        function addMessage(content, type) {
+            const messages = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.className = 'message ' + type;
+            div.textContent = content;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function setInputEnabled(enabled) {
+            document.getElementById('message-input').disabled = !enabled;
+            document.getElementById('send-btn').disabled = !enabled;
+            document.getElementById('add-all-btn').disabled = !enabled || groceryList.length === 0;
+            isProcessing = !enabled;
+        }
+
+        function renderGroceryList() {
+            const listEl = document.getElementById('grocery-list');
+            const emptyEl = document.getElementById('empty-list');
+            const countEl = document.getElementById('item-count');
+            const addAllBtn = document.getElementById('add-all-btn');
+            countEl.textContent = groceryList.length;
+            addAllBtn.disabled = isProcessing || groceryList.length === 0;
+            countEl.classList.toggle('has-items', groceryList.length > 0);
+            if (groceryList.length === 0) { if (emptyEl) emptyEl.style.display = 'block'; listEl.querySelectorAll('.grocery-item').forEach(el => el.remove()); return; }
+            if (emptyEl) emptyEl.style.display = 'none';
+            listEl.innerHTML = '';
+            groceryList.forEach((item, index) => {
+                const itemEl = document.createElement('div');
+                itemEl.className = 'grocery-item';
+                itemEl.innerHTML = `<div class="item-info"><div class="item-name">${escapeHtml(item.name)}</div><div class="item-qty">Qty: ${item.qty}</div></div><div class="edit-qty"><button class="qty-btn" onclick="updateQty(${index}, -1)">−</button><span class="qty-display">${item.qty}</span><button class="qty-btn" onclick="updateQty(${index}, 1)">+</button></div><button class="remove-btn" onclick="removeItem(${index})">×</button>`;
+                listEl.appendChild(itemEl);
+            });
+        }
+
+        function escapeHtml(text) { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
+        function addToGroceryList(name, qty = 1) { const existing = groceryList.find(item => item.name.toLowerCase() === name.toLowerCase()); if (existing) existing.qty += qty; else groceryList.push({ name, qty }); renderGroceryList(); saveListToStorage(); if (window.innerWidth <= 768) { document.getElementById('sidebar').classList.add('expanded'); setTimeout(() => document.getElementById('sidebar').classList.remove('expanded'), 2000); } }
+        function removeItem(index) { groceryList.splice(index, 1); renderGroceryList(); saveListToStorage(); }
+        function updateQty(index, delta) { groceryList[index].qty += delta; if (groceryList[index].qty <= 0) removeItem(index); else { renderGroceryList(); saveListToStorage(); } }
+        function clearList() { if (groceryList.length === 0) return; if (confirm('Clear all items?')) { groceryList = []; renderGroceryList(); saveListToStorage(); } }
+        function addManualItem() { const input = document.getElementById('manual-item-input'); const name = input.value.trim(); if (name) { addToGroceryList(name, 1); input.value = ''; } }
+        function handleManualItemKeyPress(event) { if (event.key === 'Enter') addManualItem(); }
+        function saveListToStorage() { localStorage.setItem('groceryList_' + threadId, JSON.stringify(groceryList)); }
+        function loadListFromStorage() { const saved = localStorage.getItem('groceryList_' + threadId); if (saved) { groceryList = JSON.parse(saved); renderGroceryList(); } }
+
+        function parseItemsFromResponse(text) {
+            const items = [];
+            const lines = text.split(/\\r?\\n|\\r/);
+            for (const line of lines) {
+                const trimmed = line.trim();
+                const bulletMatch = trimmed.match(/^[-•*]\\s+(.+)$/) || trimmed.match(/^\\d+[.)]\\s+(.+)$/);
+                if (bulletMatch) {
+                    let itemText = bulletMatch[1].trim();
+                    let qty = 1;
+                    const qtyPatterns = [/^(\\d+)\\s*x\\s+(.+)$/i, /^(.+?)\\s*x\\s*(\\d+)$/i, /^(.+?)\\s*\\((\\d+)\\)$/];
+                    for (const pat of qtyPatterns) { const m = itemText.match(pat); if (m) { if (/^\\d+$/.test(m[1])) { qty = parseInt(m[1]); itemText = m[2]; } else { qty = parseInt(m[2]); itemText = m[1]; } break; } }
+                    itemText = itemText.replace(/\\*\\*/g, '').replace(/[,;:]$/, '').trim();
+                    if (itemText.length > 0 && itemText.length < 100) items.push({ name: itemText, qty });
                 }
-            } catch (error) {
-                status.textContent = '✗ Login error: ' + error.message;
-                status.style.color = '#dc3545';
-                btn.textContent = 'Retry Login';
-                btn.disabled = false;
             }
+            return items;
         }
-        function showPanel(panelId) {
-            document.querySelectorAll('.status-panel').forEach(p => p.classList.remove('active'));
-            document.getElementById('input-panel').style.display = panelId === 'input-panel' ? 'block' : 'none';
-            if (panelId !== 'input-panel') document.getElementById(panelId).classList.add('active');
+
+        let itemStepProgress = {};
+
+        function handleStreamEvent(event, progressDiv, itemsProcessed) {
+            const eventType = event.type || '';
+            switch (eventType) {
+                case 'job_id': saveJobId(event.job_id); break;
+                case 'message': progressDiv.remove(); addMessage(event.content, 'assistant'); clearJobId(); parseItemsFromResponse(event.content).forEach(item => addToGroceryList(item.name, item.qty)); break;
+                case 'error': progressDiv.remove(); addMessage('Error: ' + event.message, 'error'); clearJobId(); break;
+                case 'done': if (progressDiv.parentNode) progressDiv.remove(); itemStepProgress = {}; clearJobId(); break;
+                case 'status': progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Processing...')}</span>`; break;
+                case 'item_start': itemStepProgress[event.item] = { step: 0, action: 'Starting...' }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+                case 'step': itemStepProgress[event.item] = { step: event.step || 0, action: event.action || '...' }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+                case 'item_complete':
+                    delete itemStepProgress[event.item];
+                    const icon = event.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>' : event.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>' : '<span style="color: #f87171;">&#10007;</span>';
+                    itemsProcessed.push({ item: event.item, status: event.status, icon: icon, steps: event.steps || 0 });
+                    updateProgressDisplay(progressDiv, itemsProcessed);
+                    break;
+                case 'complete': progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Complete')}</span>`; break;
+            }
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
         }
-        function resetToInput() {
-            showPanel('input-panel');
-            document.getElementById('items-input').value = '';
-            document.getElementById('add-to-cart-btn').disabled = false;
-            currentCartJobId = null;
-            currentCheckoutJobId = null;
+
+        function updateProgressDisplay(progressDiv, itemsProcessed) {
+            const inProgress = Object.keys(itemStepProgress).length;
+            const completed = itemsProcessed.length;
+            const total = inProgress + completed;
+            let html = '';
+            if (total > 0) html += `<div style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 8px;">Progress: ${completed}/${total}</div>`;
+            html += '<div style="font-size: 0.85rem;">';
+            itemsProcessed.forEach(p => { const stepsInfo = p.steps ? ` <span style="opacity: 0.5; font-size: 0.7rem;">(${p.steps} steps)</span>` : ''; html += `<div>${p.icon} ${escapeHtml(p.item)}${stepsInfo}</div>`; });
+            for (const [item, progress] of Object.entries(itemStepProgress)) {
+                let statusText = progress.step > 0 ? `Step ${progress.step}` + (progress.action && progress.action !== 'Starting...' ? `: ${progress.action.substring(0, 40)}` : '') : 'In Progress';
+                html += `<div style="opacity: 0.7;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span>${escapeHtml(item)} <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span></div>`;
+            }
+            html += '</div>';
+            progressDiv.innerHTML = html;
         }
-        async function addToCart() {
-            const input = document.getElementById('items-input').value.trim();
-            items = input.split('\\n').map(i => i.trim()).filter(i => i.length > 0);
-            if (items.length === 0) { alert('Please enter at least one item.'); return; }
-            document.getElementById('add-to-cart-btn').disabled = true;
-            const statusList = document.getElementById('item-status-list');
-            statusList.innerHTML = items.map((item, i) => `<li id="item-${i}"><span>${item}</span><span class="status-badge status-pending">Pending</span></li>`).join('');
-            document.getElementById('cart-progress-text').textContent = `0/${items.length}`;
-            document.getElementById('cart-progress-bar').style.width = '0%';
-            document.getElementById('cart-summary').style.display = 'none';
-            document.getElementById('checkout-buttons').style.display = 'none';
-            showPanel('cart-status-panel');
+
+        async function sendMessage() {
+            const input = document.getElementById('message-input');
+            const message = input.value.trim();
+            if (!message || isProcessing) return;
+            input.value = '';
+            addMessage(message, 'user');
+            setInputEnabled(false);
+            document.getElementById('suggestions').style.display = 'none';
+
+            const progressDiv = document.createElement('div');
+            progressDiv.className = 'message assistant';
+            progressDiv.id = 'current-progress';
+            progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+            document.getElementById('messages').appendChild(progressDiv);
+
             try {
-                const response = await fetch('/api/add-to-cart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) });
-                const data = await response.json();
-                currentCartJobId = data.job_id;
-                pollCartStatus();
-            } catch (error) {
-                alert('Failed to start adding items: ' + error.message);
-                document.getElementById('add-to-cart-btn').disabled = false;
-            }
-        }
-        function pollCartStatus() {
-            const eventSource = new EventSource(`/api/job/${currentCartJobId}/stream`);
-            eventSource.onmessage = function(event) {
-                const job = JSON.parse(event.data);
-                if (job.error) { eventSource.close(); alert('Error: ' + job.error); return; }
-                const progress = (job.completed / job.total) * 100;
-                document.getElementById('cart-progress-bar').style.width = progress + '%';
-                document.getElementById('cart-progress-text').textContent = `${job.completed}/${job.total}`;
-                job.results.forEach(result => {
-                    const itemIndex = items.indexOf(result.item);
-                    if (itemIndex >= 0) {
-                        const itemEl = document.getElementById(`item-${itemIndex}`);
-                        if (itemEl) {
-                            const badge = itemEl.querySelector('.status-badge');
-                            badge.className = 'status-badge ' + (result.status === 'success' ? 'status-success' : 'status-failed');
-                            badge.textContent = result.status === 'success' ? 'Added' : 'Failed';
+                const response = await fetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ thread_id: threadId, message: message }) });
+                if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let itemsProcessed = [];
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\\n\\n');
+                    buffer = lines.pop();
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try { handleStreamEvent(JSON.parse(line.slice(6)), progressDiv, itemsProcessed); } catch (e) { console.error('Parse error:', e); }
                         }
                     }
-                });
-                items.forEach((item, i) => {
-                    const itemEl = document.getElementById(`item-${i}`);
-                    const badge = itemEl.querySelector('.status-badge');
-                    if (badge.classList.contains('status-pending') && job.status === 'running') {
-                        const isComplete = job.results.some(r => r.item === item);
-                        if (!isComplete) { badge.className = 'status-badge status-processing'; badge.textContent = 'Processing...'; }
-                    }
-                });
-                if (job.status === 'completed') {
-                    eventSource.close();
-                    const successes = job.results.filter(r => r.status === 'success').length;
-                    const failures = job.results.filter(r => r.status === 'failed').length;
-                    document.getElementById('success-count').textContent = successes;
-                    document.getElementById('failed-count').textContent = failures;
-                    document.getElementById('cart-summary').style.display = 'block';
-                    document.getElementById('checkout-buttons').style.display = 'flex';
-                    document.querySelector('#cart-status-panel .status-header h2').textContent = 'Items added to cart';
                 }
-            };
-            eventSource.onerror = function() { eventSource.close(); };
+            } catch (error) {
+                progressDiv.remove();
+                addMessage('Error: ' + error.message, 'error');
+                clearJobId();
+            }
+            setInputEnabled(true);
+            document.getElementById('message-input').focus();
         }
-        async function startCheckout() {
-            showPanel('checkout-status-panel');
-            document.getElementById('checkout-step').innerHTML = '<span class="spinner"></span> Starting checkout process...';
-            try {
-                const response = await fetch('/api/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-                const data = await response.json();
-                currentCheckoutJobId = data.job_id;
-                pollCheckoutStatus();
-            } catch (error) { alert('Failed to start checkout: ' + error.message); }
+
+        async function addAllToCart() {
+            if (groceryList.length === 0 || isProcessing) return;
+            const itemList = groceryList.map(item => item.qty > 1 ? `${item.qty}x ${item.name}` : item.name).join(', ');
+            const message = `Please add these items to my Superstore cart: ${itemList}`;
+            document.getElementById('message-input').value = message;
+            sendMessage();
         }
-        function pollCheckoutStatus() {
-            const eventSource = new EventSource(`/api/job/${currentCheckoutJobId}/stream`);
-            eventSource.onmessage = function(event) {
-                const job = JSON.parse(event.data);
-                if (job.error) { eventSource.close(); alert('Error: ' + job.error); return; }
-                document.getElementById('checkout-step').innerHTML = (job.status === 'running' ? '<span class="spinner"></span> ' : '') + job.step;
-                if (job.status === 'awaiting_confirmation') { eventSource.close(); showPanel('confirmation-panel'); }
-                else if (job.status === 'failed') { eventSource.close(); showComplete('Checkout Failed', job.step, false); }
-            };
-            eventSource.onerror = function() { eventSource.close(); };
-        }
-        async function placeOrder() {
-            showPanel('checkout-status-panel');
-            document.getElementById('checkout-step').innerHTML = '<span class="spinner"></span> Placing order...';
-            try {
-                const response = await fetch('/api/place-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checkout_job_id: currentCheckoutJobId }) });
-                const data = await response.json();
-                pollPlaceOrderStatus(data.job_id);
-            } catch (error) { alert('Failed to place order: ' + error.message); }
-        }
-        function pollPlaceOrderStatus(jobId) {
-            const eventSource = new EventSource(`/api/job/${jobId}/stream`);
-            eventSource.onmessage = function(event) {
-                const job = JSON.parse(event.data);
-                if (job.error) { eventSource.close(); alert('Error: ' + job.error); return; }
-                document.getElementById('checkout-step').innerHTML = (job.status === 'running' ? '<span class="spinner"></span> ' : '') + job.step;
-                if (job.status === 'completed') { eventSource.close(); showComplete('Order Placed!', 'Your order has been successfully placed.', true); }
-                else if (job.status === 'failed') { eventSource.close(); showComplete('Order Failed', job.step, false); }
-            };
-            eventSource.onerror = function() { eventSource.close(); };
-        }
-        async function cancelCheckout() {
-            try { await fetch('/api/cancel-checkout', { method: 'POST' }); showComplete('Order Cancelled', 'Your order was not placed.', false); }
-            catch (error) { alert('Error cancelling: ' + error.message); }
-        }
-        function showComplete(title, message, success) {
-            document.getElementById('complete-title').textContent = title;
-            document.getElementById('complete-message').textContent = message;
-            document.getElementById('complete-title').style.color = success ? '#28a745' : '#dc3545';
-            showPanel('complete-panel');
-        }
+
+        function sendSuggestion(el) { document.getElementById('message-input').value = el.textContent; sendMessage(); }
+        function handleKeyPress(event) { if (event.key === 'Enter' && !isProcessing) sendMessage(); }
+        function toggleSidebar() { document.getElementById('sidebar').classList.toggle('expanded'); }
+
+        document.addEventListener('click', function(e) { const sidebar = document.getElementById('sidebar'); if (window.innerWidth <= 768 && sidebar.classList.contains('expanded') && !sidebar.contains(e.target)) sidebar.classList.remove('expanded'); });
+
+        document.getElementById('message-input').focus();
+        renderGroceryList();
     </script>
 </body>
 </html>"""
 
     @flask_app.route("/")
     def index():
-        return INDEX_HTML
+        return CHAT_HTML
 
-    @flask_app.route("/api/login", methods=["POST"])
-    def login():
-        """Trigger login to populate shared session profile.
+    @flask_app.route("/api/chat/stream", methods=["POST"])
+    def chat_stream():
+        """Handle chat messages with SSE streaming for progress updates."""
+        import asyncio
+        import queue
+        import threading
 
-        Call this endpoint first before adding items to ensure session is authenticated.
-        """
-        print("[Flask] Login endpoint called")
-        try:
-            result = login_remote.remote()
-            print(f"[Flask] Login result: {result}")
-            return jsonify(result)
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[Flask] Login error: {error_msg}")
-            return jsonify({"status": "failed", "message": error_msg}), 500
-
-    @flask_app.route("/api/add-to-cart", methods=["POST"])
-    def add_to_cart():
         data = request.json
-        items = data.get("items", [])
+        thread_id = data.get("thread_id")
+        message = data.get("message")
 
-        if not items:
-            return jsonify({"error": "No items provided"}), 400
+        if not thread_id or not message:
+            return jsonify({"error": "Missing thread_id or message"}), 400
 
-        job_id = str(uuid.uuid4())
-        jobs[job_id] = {
-            "type": "add_to_cart",
-            "status": "pending",
-            "items": items,
-            "total": len(items),
-            "completed": 0,
-            "results": [],
-        }
+        job_id = create_job(thread_id, message)
+        event_queue = queue.Queue()
 
-        thread = threading.Thread(target=run_add_items_job, args=(job_id, items))
-        thread.start()
+        def run_agent_async():
+            try:
+                agent = get_or_create_agent(thread_id)
+                config = {"configurable": {"thread_id": thread_id}}
 
-        return jsonify({"job_id": job_id})
+                async def stream_agent():
+                    final_content = None
+                    async for chunk in agent.astream(
+                        {"messages": [HumanMessage(content=message)]},
+                        config=config,
+                        stream_mode=["updates", "custom"],
+                    ):
+                        if isinstance(chunk, tuple) and len(chunk) == 2:
+                            mode, chunk_data = chunk
+                            if mode == "custom" and isinstance(chunk_data, dict) and "progress" in chunk_data:
+                                progress_event = chunk_data["progress"]
+                                event_queue.put(progress_event)
+                                update_job_progress(job_id, progress_event)
+                            elif mode == "updates" and isinstance(chunk_data, dict) and "chat" in chunk_data:
+                                msgs = chunk_data["chat"].get("messages", [])
+                                for msg in msgs:
+                                    if isinstance(msg, AIMessage):
+                                        final_content = msg.content
+                    return final_content
 
-    @flask_app.route("/api/checkout", methods=["POST"])
-    def start_checkout():
-        job_id = str(uuid.uuid4())
-        jobs[job_id] = {
-            "type": "checkout",
-            "status": "pending",
-            "step": "Initializing...",
-        }
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    final_content = loop.run_until_complete(stream_agent())
+                finally:
+                    loop.close()
 
-        thread = threading.Thread(target=run_checkout_job, args=(job_id,))
-        thread.start()
+                if final_content:
+                    msg_event = {"type": "message", "content": final_content}
+                    event_queue.put(msg_event)
+                    update_job_progress(job_id, msg_event)
 
-        return jsonify({"job_id": job_id})
+                event_queue.put({"type": "done"})
+                update_job_progress(job_id, {"type": "complete"})
 
-    @flask_app.route("/api/place-order", methods=["POST"])
-    def place_order():
-        data = request.json
-        checkout_job_id = data.get("checkout_job_id")
+            except Exception as e:
+                import traceback
+                print(f"[ChatStream] Error: {e}")
+                print(f"[ChatStream] Traceback: {traceback.format_exc()}")
+                event_queue.put({"type": "error", "message": str(e)})
+                event_queue.put({"type": "done"})
+                update_job_progress(job_id, {"type": "error", "message": str(e)})
 
-        job_id = str(uuid.uuid4())
-        jobs[job_id] = {
-            "type": "place_order",
-            "status": "pending",
-            "step": "Initializing...",
-        }
+        def generate():
+            yield f"data: {json.dumps({'type': 'job_id', 'job_id': job_id})}\n\n"
+            agent_thread = threading.Thread(target=run_agent_async)
+            agent_thread.start()
+            while True:
+                try:
+                    event = event_queue.get(timeout=1.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    if event.get("type") in ("done", "error"):
+                        break
+                except queue.Empty:
+                    if not agent_thread.is_alive():
+                        break
+                    yield ": keepalive\n\n"
+            agent_thread.join(timeout=5.0)
 
-        thread = threading.Thread(target=run_place_order_job, args=(job_id, checkout_job_id))
-        thread.start()
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+        )
 
-        return jsonify({"job_id": job_id})
-
-    @flask_app.route("/api/cancel-checkout", methods=["POST"])
-    def cancel_checkout():
-        global checkout_browser
-
-        async def _cancel():
-            global checkout_browser
-            if checkout_browser:
-                await checkout_browser.kill()
-                checkout_browser = None
-
-        asyncio.run(_cancel())
-        return jsonify({"status": "cancelled"})
-
-    @flask_app.route("/api/job/<job_id>")
-    def get_job_status(job_id):
-        job = jobs.get(job_id)
+    @flask_app.route("/api/job/<job_id>/status", methods=["GET"])
+    def job_status(job_id):
+        job = get_job_status(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
+        return jsonify(job)
 
-        response = {k: v for k, v in job.items() if k != "agent"}
-        return jsonify(response)
+    @flask_app.route("/api/reset", methods=["POST"])
+    def reset():
+        data = request.json
+        thread_id = data.get("thread_id")
+        if thread_id in agents:
+            del agents[thread_id]
+        return jsonify({"status": "reset"})
 
-    @flask_app.route("/api/job/<job_id>/stream")
-    def stream_job_status(job_id):
-        def generate():
-            last_state = None
-            while True:
-                job = jobs.get(job_id)
-                if not job:
-                    yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
-                    break
-
-                current_state = {k: v for k, v in job.items() if k != "agent"}
-                state_json = json.dumps(current_state)
-
-                if state_json != last_state:
-                    yield f"data: {state_json}\n\n"
-                    last_state = state_json
-
-                if job["status"] in ["completed", "failed", "awaiting_confirmation"]:
-                    break
-
-                time.sleep(0.5)
-
-        return Response(generate(), mimetype="text/event-stream")
+    @flask_app.route("/health")
+    def health():
+        return jsonify({"status": "ok"})
 
     return flask_app
