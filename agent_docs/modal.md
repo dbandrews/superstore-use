@@ -152,3 +152,40 @@ Logs:
 ## Testing and debugging
 
 - When using `app.deploy()`, you can wrap it in a `with modal.enable_output():` block to get more output.
+
+## Continuous Deployment with GitHub Actions
+
+This project includes a GitHub Actions workflow that automatically deploys Modal apps to production when code is merged to the `main` branch.
+
+### Setup
+
+1. **Create Modal tokens** for CI/CD:
+   ```bash
+   modal token new --profile ci
+   ```
+   This will output a `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
+
+2. **Add secrets to GitHub repository**:
+   - Go to your repository → Settings → Secrets and variables → Actions
+   - Add two secrets:
+     - `MODAL_TOKEN_ID`: Your Modal token ID
+     - `MODAL_TOKEN_SECRET`: Your Modal token secret
+
+3. **Workflow file** is located at `.github/workflows/deploy-modal.yml`
+
+### How it works
+
+The workflow:
+- Triggers automatically on pushes to `main` branch
+- Can also be triggered manually via GitHub UI (workflow_dispatch)
+- Deploys both Modal apps:
+  - `modal_chat_app.py` - Chat UI
+  - `modal_app.py` - Shopping agent backend
+
+### Manual deployment
+
+You can still deploy manually from your local machine:
+```bash
+modal deploy modal_chat_app.py
+modal deploy modal_app.py
+```
