@@ -1,0 +1,3 @@
+# This file ensures the superstore-profile directory exists in git
+# The directory is needed for Modal deployment (modal_app.py line 90-94)
+# All other contents are generated at runtime and ignored by git
