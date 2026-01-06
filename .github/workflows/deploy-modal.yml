@@ -27,14 +27,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Deploy Modal chat app
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: |
-          uv run modal deploy modal_chat_app.py
-
-      - name: Deploy Modal shopping agent
+      - name: Deploy unified Modal app
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
