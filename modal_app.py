@@ -223,13 +223,51 @@ def add_item_remote_streaming(item: str, index: int):
 
     async def _add_item():
         """Async function that runs the browser agent and pushes step events to queue."""
+        import shutil
+        import tempfile
+
         print(f"[Container {index}] Starting to add item: {item}")
 
         profile_exists = os.path.exists("/session/profile")
         print(f"[Container {index}] Shared profile exists: {profile_exists}")
 
-        print(f"[Container {index}] Creating browser with shared profile...")
-        browser = create_browser(shared_profile=True)
+        # Copy shared profile to temporary directory to avoid profile locking
+        # (multiple browsers cannot use the same Chrome profile simultaneously)
+        temp_dir = tempfile.mkdtemp(prefix=f"worker-{index}-")
+        temp_profile = os.path.join(temp_dir, "profile")
+
+        if profile_exists:
+            print(f"[Container {index}] Copying shared profile to temporary directory...")
+            shutil.copytree("/session/profile", temp_profile, dirs_exist_ok=True)
+            print(f"[Container {index}] Profile copied to {temp_profile}")
+        else:
+            print(f"[Container {index}] WARNING: No shared profile found, creating empty profile")
+            os.makedirs(temp_profile, exist_ok=True)
+
+        # Use temporary profile copy (has login cookies from shared profile)
+        print(f"[Container {index}] Creating browser with profile copy...")
+        from browser_use import Browser
+        from browser_use.browser.profile import ProxySettings
+
+        proxy_config = get_proxy_config()
+        proxy_settings = None
+        if proxy_config:
+            proxy_settings = ProxySettings(
+                server=proxy_config["server"],
+                username=proxy_config["username"],
+                password=proxy_config["password"],
+            )
+
+        browser = Browser(
+            headless=True,
+            window_size={"width": 1920, "height": 1080},
+            wait_between_actions=1.5,
+            minimum_wait_page_load_time=1.5,
+            wait_for_network_idle_page_load_time=1.5,
+            user_data_dir=temp_profile,
+            proxy=proxy_settings,
+            args=STEALTH_ARGS,
+        )
 
         step_count = 0
 
@@ -316,12 +354,12 @@ def add_item_remote_streaming(item: str, index: int):
             await browser.kill()
             print(f"[Container {index}] Browser closed")
 
-            # Commit volume to persist cart state
+            # Clean up temporary profile directory
             try:
-                session_volume.commit()
-                print(f"[Container {index}] Volume committed - cart state persisted")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                print(f"[Container {index}] Temporary profile cleaned up")
             except Exception as e:
-                print(f"[Container {index}] Warning: Volume commit failed: {e}")
+                print(f"[Container {index}] Warning: Failed to clean up temp profile: {e}")
 
     def run_async():
         """Run async code in a thread so generator can yield during execution."""
@@ -404,15 +442,52 @@ def add_item_remote(item: str, index: int) -> dict:
     from browser_use import Agent, ChatOpenAI
 
     async def _add_item():
+        import shutil
+        import tempfile
+
         print(f"[Container {index}] Starting to add item: {item}")
 
         # Check if shared profile exists (indicates login has been done)
         profile_exists = os.path.exists("/session/profile")
         print(f"[Container {index}] Shared profile exists: {profile_exists}")
 
-        # Use shared profile on volume for persistent login state
-        print(f"[Container {index}] Creating browser with shared profile...")
-        browser = create_browser(shared_profile=True)
+        # Copy shared profile to temporary directory to avoid profile locking
+        # (multiple browsers cannot use the same Chrome profile simultaneously)
+        temp_dir = tempfile.mkdtemp(prefix=f"worker-{index}-")
+        temp_profile = os.path.join(temp_dir, "profile")
+
+        if profile_exists:
+            print(f"[Container {index}] Copying shared profile to temporary directory...")
+            shutil.copytree("/session/profile", temp_profile, dirs_exist_ok=True)
+            print(f"[Container {index}] Profile copied to {temp_profile}")
+        else:
+            print(f"[Container {index}] WARNING: No shared profile found, creating empty profile")
+            os.makedirs(temp_profile, exist_ok=True)
+
+        # Use temporary profile copy (has login cookies from shared profile)
+        print(f"[Container {index}] Creating browser with profile copy...")
+        from browser_use import Browser
+        from browser_use.browser.profile import ProxySettings
+
+        proxy_config = get_proxy_config()
+        proxy_settings = None
+        if proxy_config:
+            proxy_settings = ProxySettings(
+                server=proxy_config["server"],
+                username=proxy_config["username"],
+                password=proxy_config["password"],
+            )
+
+        browser = Browser(
+            headless=True,
+            window_size={"width": 1920, "height": 1080},
+            wait_between_actions=1.5,
+            minimum_wait_page_load_time=1.5,
+            wait_for_network_idle_page_load_time=1.5,
+            user_data_dir=temp_profile,
+            proxy=proxy_settings,
+            args=STEALTH_ARGS,
+        )
         try:
             print(f"[Container {index}] Browser created, initializing agent...")
             agent = Agent(
@@ -470,12 +545,13 @@ def add_item_remote(item: str, index: int) -> dict:
             await browser.kill()
             print(f"[Container {index}] Browser closed")
 
-            # Commit volume to persist cart state
+            # Clean up temporary profile directory
+            import shutil
             try:
-                session_volume.commit()
-                print(f"[Container {index}] Volume committed - cart state persisted")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                print(f"[Container {index}] Temporary profile cleaned up")
             except Exception as e:
-                print(f"[Container {index}] Warning: Volume commit failed: {e}")
+                print(f"[Container {index}] Warning: Failed to clean up temp profile: {e}")
 
     return asyncio.run(_add_item())
 
