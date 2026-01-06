@@ -719,7 +719,6 @@ def run_place_order_job(job_id: str, checkout_job_id: str):
     },
     volumes={"/session": session_volume},  # Mount volume for persistent session
 )
-@modal.concurrent(max_inputs=100)
 @modal.wsgi_app()
 def flask_app():
     import time

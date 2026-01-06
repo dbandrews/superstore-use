@@ -38,7 +38,6 @@ image = (
     cpu=1,
     memory=2048,
 )
-@modal.concurrent(max_inputs=100)
 @modal.wsgi_app()
 def flask_app():
     """Flask app for the chat UI."""
