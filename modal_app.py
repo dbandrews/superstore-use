@@ -312,6 +312,143 @@ def login_remote() -> dict:
     cpu=1,
     memory=4096,
 )
+def login_remote_streaming():
+    """Streaming version of login that yields progress events."""
+    import queue
+    import threading
+
+    from browser_use import Agent, ChatOpenAI
+
+    step_events: queue.Queue[dict] = queue.Queue()
+    result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
+
+    async def _login():
+        username = os.environ.get("SUPERSTORE_USER")
+        password = os.environ.get("SUPERSTORE_PASSWORD")
+
+        if not username or not password:
+            return {"status": "failed", "message": "Missing credentials"}
+
+        print("[Login] Starting login process on Modal...")
+        browser = create_browser(shared_profile=True)
+        step_count = 0
+
+        async def on_step_end(agent):
+            nonlocal step_count
+            step_count += 1
+
+            model_outputs = agent.history.model_outputs()
+            latest_output = model_outputs[-1] if model_outputs else None
+
+            thinking = None
+            next_goal = None
+
+            if latest_output:
+                thinking = latest_output.thinking
+                next_goal = latest_output.next_goal
+
+            step_events.put({
+                "type": "step",
+                "step": step_count,
+                "thinking": thinking,
+                "next_goal": next_goal,
+            })
+
+        try:
+            agent = Agent(
+                task=f"""
+                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
+
+                Steps:
+                1. Go to https://www.realcanadiansuperstore.ca/en
+                2. If you see "My Shop" and "let's get started by shopping your regulars",
+                   you are already logged in - call done.
+                3. Otherwise, click "Sign in" at top right.
+                4. Enter username: {username}
+                5. Enter password: {password}
+                6. Click the sign in button.
+                7. Wait for "My Account" at top right to confirm login.
+
+                Complete when logged in.
+                """,
+                llm=ChatOpenAI(model="gpt-4.1"),
+                browser_session=browser,
+            )
+
+            await agent.run(max_steps=50, on_step_end=on_step_end)
+
+            session_volume.commit()
+            print("[Login] Session committed to Modal volume.")
+
+            return {"status": "success", "message": "Login successful", "steps": step_count}
+
+        except Exception as e:
+            print(f"[Login] Error: {e}")
+            return {"status": "failed", "message": str(e), "steps": step_count}
+        finally:
+            await browser.kill()
+
+    def run_async():
+        try:
+            result_holder["result"] = asyncio.run(_login())
+        except Exception as e:
+            result_holder["error"] = str(e)
+
+    worker_thread = threading.Thread(target=run_async)
+    worker_thread.start()
+
+    yield json.dumps({"type": "start"})
+
+    while worker_thread.is_alive():
+        try:
+            event = step_events.get(timeout=0.5)
+            yield json.dumps(event)
+        except queue.Empty:
+            pass
+
+    while not step_events.empty():
+        try:
+            event = step_events.get_nowait()
+            yield json.dumps(event)
+        except queue.Empty:
+            break
+
+    if result_holder["error"]:
+        yield json.dumps({
+            "type": "complete",
+            "status": "failed",
+            "message": result_holder["error"],
+            "steps": 0,
+        })
+    elif result_holder["result"]:
+        yield json.dumps({"type": "complete", **result_holder["result"]})
+    else:
+        yield json.dumps({
+            "type": "complete",
+            "status": "failed",
+            "message": "Unknown error",
+            "steps": 0,
+        })
+
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
+    ],
+    volumes={"/session": session_volume},
+    timeout=600,
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "IN_DOCKER": "True",
+    },
+    cpu=1,
+    memory=4096,
+)
 def add_item_remote(item: str, index: int) -> dict:
     """Add a single item to cart in a separate Modal container (parallelizable).
 
@@ -889,6 +1026,7 @@ def flask_app():
         }
 
         let itemStepProgress = {};
+        let loginProgress = null;
 
         function handleStreamEvent(event, progressDiv, itemsProcessed) {
             const eventType = event.type || '';
@@ -896,8 +1034,16 @@ def flask_app():
                 case 'job_id': saveJobId(event.job_id); break;
                 case 'message': progressDiv.remove(); addMessage(event.content, 'assistant'); clearJobId(); parseItemsFromResponse(event.content).forEach(item => addToGroceryList(item.name, item.qty)); break;
                 case 'error': progressDiv.remove(); addMessage('Error: ' + event.message, 'error'); clearJobId(); break;
-                case 'done': if (progressDiv.parentNode) progressDiv.remove(); itemStepProgress = {}; clearJobId(); break;
+                case 'done': if (progressDiv.parentNode) progressDiv.remove(); itemStepProgress = {}; loginProgress = null; clearJobId(); break;
                 case 'status': progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Processing...')}</span>`; break;
+                case 'login_start': loginProgress = { step: 0, thinking: null, next_goal: null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+                case 'login_step': loginProgress = { step: event.step || 0, thinking: event.thinking || null, next_goal: event.next_goal || null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+                case 'login_complete':
+                    loginProgress = null;
+                    if (event.status === 'success') {
+                        updateProgressDisplay(progressDiv, itemsProcessed);
+                    }
+                    break;
                 case 'item_start': itemStepProgress[event.item] = { step: 0, action: 'Starting...', thinking: null, next_goal: null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
                 case 'step': itemStepProgress[event.item] = { step: event.step || 0, action: event.action || '...', thinking: event.thinking || null, next_goal: event.next_goal || null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
                 case 'item_complete':
@@ -912,12 +1058,21 @@ def flask_app():
         }
 
         function updateProgressDisplay(progressDiv, itemsProcessed) {
+            let html = '<div style="font-size: 0.85rem;">';
+
+            // Show login progress if active
+            if (loginProgress) {
+                let statusText = loginProgress.step > 0 ? `Step ${loginProgress.step}` : 'Starting';
+                let thinkingText = loginProgress.next_goal ? loginProgress.next_goal.substring(0, 60) : (loginProgress.thinking ? loginProgress.thinking.substring(0, 60) : null);
+                html += `<div style="opacity: 0.7; margin-bottom: 8px;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span><strong>Logging in</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
+                if (thinkingText) html += `<div style="margin-left: 24px; font-size: 0.75rem; opacity: 0.5; font-style: italic;">${escapeHtml(thinkingText)}${thinkingText.length >= 60 ? '...' : ''}</div>`;
+                html += `</div>`;
+            }
+
             const inProgress = Object.keys(itemStepProgress).length;
             const completed = itemsProcessed.length;
             const total = inProgress + completed;
-            let html = '';
-            if (total > 0) html += `<div style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 8px;">Progress: ${completed}/${total}</div>`;
-            html += '<div style="font-size: 0.85rem;">';
+            if (total > 0) html += `<div style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 8px;">Items: ${completed}/${total}</div>`;
             itemsProcessed.forEach(p => { const stepsInfo = p.steps ? ` <span style="opacity: 0.5; font-size: 0.7rem;">(${p.steps} steps)</span>` : ''; html += `<div>${p.icon} ${escapeHtml(p.item)}${stepsInfo}</div>`; });
             for (const [item, progress] of Object.entries(itemStepProgress)) {
                 let statusText = progress.step > 0 ? `Step ${progress.step}` : 'Starting';

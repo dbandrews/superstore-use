@@ -100,6 +100,81 @@ def _ensure_logged_in() -> tuple[bool, str]:
         return False, f"Login error: {str(e)}"
 
 
+def _ensure_logged_in_streaming() -> Generator[dict, None, tuple[bool, str]]:
+    """
+    Streaming version of login that yields progress events.
+
+    Yields:
+        dict: Progress events with types:
+            - {"type": "login_step", "step": int, "thinking": str, "next_goal": str}
+            - {"type": "login_complete", "status": str, "message": str, "steps": int}
+
+    Returns:
+        tuple[bool, str]: (success, message)
+    """
+    import json
+
+    global _logged_in
+
+    if _logged_in:
+        yield {"type": "login_complete", "status": "success", "message": "Already logged in", "steps": 0}
+        return True, "Already logged in."
+
+    print("\n[Agent] Logging in to Superstore (streaming)...")
+
+    try:
+        login_fn = get_modal_function("login_remote_streaming")
+
+        for event_json in login_fn.remote_gen():
+            event = json.loads(event_json)
+            event_type = event.get("type")
+
+            if event_type == "start":
+                yield {"type": "login_start"}
+            elif event_type == "step":
+                yield {
+                    "type": "login_step",
+                    "step": event.get("step", 0),
+                    "thinking": event.get("thinking"),
+                    "next_goal": event.get("next_goal"),
+                }
+            elif event_type == "complete":
+                status = event.get("status", "failed")
+                message = event.get("message", "Unknown")
+                steps = event.get("steps", 0)
+
+                yield {
+                    "type": "login_complete",
+                    "status": status,
+                    "message": message,
+                    "steps": steps,
+                }
+
+                if status == "success":
+                    _logged_in = True
+                    print(f"[Agent] Login successful! ({steps} steps)")
+                    return True, "Login successful."
+                else:
+                    print(f"[Agent] Login failed: {message}")
+                    return False, f"Login failed: {message}"
+
+        # If we exit the loop without a complete event
+        return False, "Login stream ended unexpectedly"
+
+    except modal.exception.NotFoundError:
+        error_msg = (
+            f"Error: Modal app '{MODAL_APP_NAME}' not found. "
+            "Please deploy it first with: modal deploy modal_app.py"
+        )
+        yield {"type": "login_complete", "status": "failed", "message": error_msg, "steps": 0}
+        return False, error_msg
+    except Exception as e:
+        print(f"[Agent] Login error: {e}")
+        error_msg = f"Login error: {str(e)}"
+        yield {"type": "login_complete", "status": "failed", "message": error_msg, "steps": 0}
+        return False, error_msg
+
+
 def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
     """
     Streaming version of add_items_to_cart that yields real-time progress events.
@@ -127,14 +202,24 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
         yield {"type": "error", "message": "No items provided"}
         return "No items provided to add to cart."
 
-    # Ensure logged in before adding items
+    # Ensure logged in before adding items - use streaming for progress updates
     global _logged_in
     if _logged_in:
         yield {"type": "status", "message": "Already logged in"}
     else:
-        yield {"type": "status", "message": "Logging in to Superstore... (this may take a minute)"}
+        yield {"type": "status", "message": "Logging in to Superstore..."}
 
-    login_ok, login_msg = _ensure_logged_in()
+    # Use streaming login and forward all events
+    login_gen = _ensure_logged_in_streaming()
+    login_ok = False
+    login_msg = ""
+
+    for event in login_gen:
+        yield event  # Forward login progress events to caller
+        if event.get("type") == "login_complete":
+            login_ok = event.get("status") == "success"
+            login_msg = event.get("message", "")
+
     if not login_ok:
         yield {"type": "error", "message": f"Login failed: {login_msg}"}
         return f"Cannot add items: {login_msg}"
