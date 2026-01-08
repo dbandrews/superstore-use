@@ -414,14 +414,33 @@ def add_item_remote_streaming(item: str, index: int):
         async def on_step_end(agent):
             nonlocal step_count
             step_count += 1
-            actions = agent.history.model_actions()
-            action_str = str(actions[-1])[:80] if actions else "..."
+
+            # Get the agent's thinking/reasoning from model outputs
+            model_outputs = agent.history.model_outputs()
+            latest_output = model_outputs[-1] if model_outputs else None
+
+            thinking = None
+            evaluation = None
+            next_goal = None
+            action_str = "..."
+
+            if latest_output:
+                thinking = latest_output.thinking
+                evaluation = latest_output.evaluation_previous_goal
+                next_goal = latest_output.next_goal
+                # Get action from the output's action list
+                if latest_output.action:
+                    action_str = str(latest_output.action[0])[:80]
+
             step_events.put({
                 "type": "step",
                 "item": item,
                 "index": index,
                 "step": step_count,
                 "action": action_str,
+                "thinking": thinking,
+                "evaluation": evaluation,
+                "next_goal": next_goal,
             })
 
         try:
@@ -879,8 +898,8 @@ def flask_app():
                 case 'error': progressDiv.remove(); addMessage('Error: ' + event.message, 'error'); clearJobId(); break;
                 case 'done': if (progressDiv.parentNode) progressDiv.remove(); itemStepProgress = {}; clearJobId(); break;
                 case 'status': progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Processing...')}</span>`; break;
-                case 'item_start': itemStepProgress[event.item] = { step: 0, action: 'Starting...' }; updateProgressDisplay(progressDiv, itemsProcessed); break;
-                case 'step': itemStepProgress[event.item] = { step: event.step || 0, action: event.action || '...' }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+                case 'item_start': itemStepProgress[event.item] = { step: 0, action: 'Starting...', thinking: null, next_goal: null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+                case 'step': itemStepProgress[event.item] = { step: event.step || 0, action: event.action || '...', thinking: event.thinking || null, next_goal: event.next_goal || null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
                 case 'item_complete':
                     delete itemStepProgress[event.item];
                     const icon = event.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>' : event.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>' : '<span style="color: #f87171;">&#10007;</span>';
@@ -901,8 +920,11 @@ def flask_app():
             html += '<div style="font-size: 0.85rem;">';
             itemsProcessed.forEach(p => { const stepsInfo = p.steps ? ` <span style="opacity: 0.5; font-size: 0.7rem;">(${p.steps} steps)</span>` : ''; html += `<div>${p.icon} ${escapeHtml(p.item)}${stepsInfo}</div>`; });
             for (const [item, progress] of Object.entries(itemStepProgress)) {
-                let statusText = progress.step > 0 ? `Step ${progress.step}` + (progress.action && progress.action !== 'Starting...' ? `: ${progress.action.substring(0, 40)}` : '') : 'In Progress';
-                html += `<div style="opacity: 0.7;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span>${escapeHtml(item)} <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span></div>`;
+                let statusText = progress.step > 0 ? `Step ${progress.step}` : 'Starting';
+                let thinkingText = progress.next_goal ? progress.next_goal.substring(0, 60) : (progress.thinking ? progress.thinking.substring(0, 60) : null);
+                html += `<div style="opacity: 0.7; margin-bottom: 4px;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span><strong>${escapeHtml(item)}</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
+                if (thinkingText) html += `<div style="margin-left: 24px; font-size: 0.75rem; opacity: 0.5; font-style: italic;">${escapeHtml(thinkingText)}${thinkingText.length >= 60 ? '...' : ''}</div>`;
+                html += `</div>`;
             }
             html += '</div>';
             progressDiv.innerHTML = html;
