@@ -100,17 +100,93 @@ def _ensure_logged_in() -> tuple[bool, str]:
         return False, f"Login error: {str(e)}"
 
 
+def _ensure_logged_in_streaming() -> Generator[dict, None, tuple[bool, str]]:
+    """
+    Streaming version of login that yields progress events.
+
+    Yields:
+        dict: Progress events with types:
+            - {"type": "login_step", "step": int, "thinking": str, "next_goal": str}
+            - {"type": "login_complete", "status": str, "message": str, "steps": int}
+
+    Returns:
+        tuple[bool, str]: (success, message)
+    """
+    import json
+
+    global _logged_in
+
+    if _logged_in:
+        yield {"type": "login_complete", "status": "success", "message": "Already logged in", "steps": 0}
+        return True, "Already logged in."
+
+    print("\n[Agent] Logging in to Superstore (streaming)...")
+
+    try:
+        login_fn = get_modal_function("login_remote_streaming")
+
+        for event_json in login_fn.remote_gen():
+            event = json.loads(event_json)
+            event_type = event.get("type")
+
+            if event_type == "start":
+                yield {"type": "login_start"}
+            elif event_type == "step":
+                yield {
+                    "type": "login_step",
+                    "step": event.get("step", 0),
+                    "thinking": event.get("thinking"),
+                    "next_goal": event.get("next_goal"),
+                }
+            elif event_type == "complete":
+                status = event.get("status", "failed")
+                message = event.get("message", "Unknown")
+                steps = event.get("steps", 0)
+
+                yield {
+                    "type": "login_complete",
+                    "status": status,
+                    "message": message,
+                    "steps": steps,
+                }
+
+                if status == "success":
+                    _logged_in = True
+                    print(f"[Agent] Login successful! ({steps} steps)")
+                    return True, "Login successful."
+                else:
+                    print(f"[Agent] Login failed: {message}")
+                    return False, f"Login failed: {message}"
+
+        # If we exit the loop without a complete event
+        return False, "Login stream ended unexpectedly"
+
+    except modal.exception.NotFoundError:
+        error_msg = (
+            f"Error: Modal app '{MODAL_APP_NAME}' not found. "
+            "Please deploy it first with: modal deploy modal_app.py"
+        )
+        yield {"type": "login_complete", "status": "failed", "message": error_msg, "steps": 0}
+        return False, error_msg
+    except Exception as e:
+        print(f"[Agent] Login error: {e}")
+        error_msg = f"Login error: {str(e)}"
+        yield {"type": "login_complete", "status": "failed", "message": error_msg, "steps": 0}
+        return False, error_msg
+
+
 def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
     """
-    Streaming version of add_items_to_cart that yields progress events.
+    Streaming version of add_items_to_cart that yields real-time progress events.
 
-    Uses Modal's starmap for PARALLEL execution across containers,
-    yielding progress events as each item completes.
+    Uses parallel threads to consume streaming generators from Modal containers,
+    yielding step-by-step progress events as each browser agent works.
 
     Yields:
         dict: Progress events with types:
             - {"type": "status", "message": str}
             - {"type": "item_start", "item": str, "index": int, "total": int}
+            - {"type": "step", "item": str, "index": int, "step": int, "action": str}
             - {"type": "item_complete", "item": str, "status": str, "message": str, ...}
             - {"type": "complete", "success_count": int, "failure_count": int, "message": str}
             - {"type": "error", "message": str}
@@ -118,67 +194,118 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
     Returns:
         str: Final summary message
     """
+    import json
+    import queue
+    from concurrent.futures import ThreadPoolExecutor
+
     if not items:
         yield {"type": "error", "message": "No items provided"}
         return "No items provided to add to cart."
 
-    # Ensure logged in before adding items
+    # Ensure logged in before adding items - use streaming for progress updates
     global _logged_in
     if _logged_in:
         yield {"type": "status", "message": "Already logged in"}
     else:
-        yield {"type": "status", "message": "Logging in to Superstore... (this may take a minute)"}
+        yield {"type": "status", "message": "Logging in to Superstore..."}
 
-    login_ok, login_msg = _ensure_logged_in()
+    # Use streaming login and forward all events
+    login_gen = _ensure_logged_in_streaming()
+    login_ok = False
+    login_msg = ""
+
+    for event in login_gen:
+        yield event  # Forward login progress events to caller
+        if event.get("type") == "login_complete":
+            login_ok = event.get("status") == "success"
+            login_msg = event.get("message", "")
+
     if not login_ok:
         yield {"type": "error", "message": f"Login failed: {login_msg}"}
         return f"Cannot add items: {login_msg}"
 
     total = len(items)
 
-    # Emit status first, then item_start events (so items display isn't wiped out by status)
     yield {
         "type": "status",
-        "message": f"Adding {total} items in parallel...",
+        "message": f"Adding {total} items in parallel with real-time progress...",
         "total": total,
     }
 
-    # Emit item_start events for all items upfront (they'll process in parallel)
-    for i, item in enumerate(items, 1):
-        yield {
-            "type": "item_start",
-            "item": item,
-            "index": i,
-            "total": total,
-            "started": i,
-        }
+    # Shared queue for collecting events from all streaming containers
+    event_queue: queue.Queue[dict] = queue.Queue()
+
+    def consume_stream(item: str, index: int):
+        """Consume streaming events from a single container and put them on the queue."""
+        try:
+            add_fn = get_modal_function("add_item_remote_streaming")
+            for event_json in add_fn.remote_gen(item, index):
+                event = json.loads(event_json)
+                event_queue.put(event)
+        except Exception as e:
+            # If streaming fails, emit a failure event
+            event_queue.put({
+                "type": "complete",
+                "item": item,
+                "index": index,
+                "status": "failed",
+                "message": str(e),
+                "steps": 0,
+            })
 
     try:
-        # Use the non-streaming version with starmap for parallel execution
-        # (Modal's starmap doesn't support generator functions)
-        add_fn = get_modal_function("add_item_remote")
+        # Start all streams in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(items)) as executor:
+            futures = [
+                executor.submit(consume_stream, item, i)
+                for i, item in enumerate(items, 1)
+            ]
 
-        # Prepare inputs for starmap: [(item, index), ...]
-        inputs = [(item, i) for i, item in enumerate(items, 1)]
+            results = []
+            completed_count = 0
 
-        results = []
-        completed_count = 0
+            # Collect events until all items complete
+            while completed_count < total:
+                try:
+                    event = event_queue.get(timeout=1.0)
+                    event_type = event.get("type")
 
-        # Process items in PARALLEL - results come back as containers complete
-        for result in add_fn.starmap(inputs, order_outputs=False):
-            completed_count += 1
-            results.append(result)
+                    if event_type == "start":
+                        # Transform to item_start for consistency
+                        yield {
+                            "type": "item_start",
+                            "item": event["item"],
+                            "index": event["index"],
+                            "total": total,
+                            "started": event["index"],
+                        }
+                    elif event_type == "step":
+                        # Forward step events directly for real-time progress
+                        yield event
+                    elif event_type == "complete":
+                        completed_count += 1
+                        results.append(event)
+                        yield {
+                            "type": "item_complete",
+                            "item": event.get("item", "?"),
+                            "index": event.get("index", 0),
+                            "total": total,
+                            "completed": completed_count,
+                            "status": event.get("status", "unknown"),
+                            "message": event.get("message", ""),
+                            "steps": event.get("steps", 0),
+                        }
+                except queue.Empty:
+                    # Check if all futures are done (handles edge cases)
+                    if all(f.done() for f in futures):
+                        break
 
-            yield {
-                "type": "item_complete",
-                "item": result.get("item", "?"),
-                "index": result.get("index", 0),
-                "total": total,
-                "completed": completed_count,
-                "status": result.get("status", "unknown"),
-                "message": result.get("message", ""),
-                "steps": result.get("steps", 0),
-            }
+            # Wait for any remaining futures to complete
+            for f in futures:
+                try:
+                    f.result()
+                except Exception:
+                    pass  # Errors already handled in consume_stream
 
         # Calculate summary
         successes = [r for r in results if r.get("status") == "success"]
