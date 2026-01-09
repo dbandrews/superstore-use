@@ -253,7 +253,26 @@ def add_single_item_process(args: tuple[str, int, int, tuple[int, int], str]) ->
 
         try:
             agent = Agent(
-                task=f"Go to https://www.realcanadiansuperstore.ca, search for {item} and add it to the cart",
+                task=f"""
+                Add "{item}" to the shopping cart on Real Canadian Superstore.
+                Go to https://www.realcanadiansuperstore.ca/en
+
+                UNDERSTANDING THE ITEM REQUEST:
+                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
+                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
+                - Note the quantity requested (e.g., 6, 2 liters, 500g)
+
+                Steps:
+                1. Search for the PRODUCT NAME (not the full quantity string)
+                   - For "6 apples", search for "apples"
+                   - For "2 liters milk", search for "milk"
+                2. Select the most relevant item that matches the quantity/size if possible
+                3. If a specific quantity is requested (like "6 apples"):
+                   - Look for a quantity selector and adjust before adding to cart
+                4. Click "Add to Cart" and wait for confirmation
+
+                Complete when the item is added to cart with the correct quantity.
+                """,
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
