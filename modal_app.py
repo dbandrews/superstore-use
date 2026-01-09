@@ -921,8 +921,9 @@ def flask_app():
         .suggestion:hover { border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.8); }
         @media (max-width: 768px) {
             body { overflow: hidden; position: fixed; width: 100%; height: 100%; }
-            .main-container { flex-direction: column; height: calc(100vh - 53px); }
-            .messages { padding: 16px; padding-bottom: 130px; gap: 12px; }
+            .main-container { flex-direction: column; height: calc(100vh - 53px); overflow: hidden; }
+            .chat-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; height: 100%; }
+            .messages { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px; padding-bottom: 130px; gap: 12px; }
             .message { max-width: 90%; }
             .suggestions { display: none; }
             .input-area { position: fixed; bottom: 56px; left: 0; right: 0; background: #0d1117; z-index: 50; padding: 12px 16px; }
