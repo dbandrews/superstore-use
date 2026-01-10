@@ -984,6 +984,7 @@ def flask_app():
         let isProcessing = false;
         let groceryList = [];
         let currentJobId = null;
+        let currentAbortController = null;
 
         function saveJobId(jobId) { currentJobId = jobId; localStorage.setItem('currentJobId_' + threadId, jobId); localStorage.setItem('currentJobTime_' + threadId, Date.now().toString()); }
         function clearJobId() { currentJobId = null; localStorage.removeItem('currentJobId_' + threadId); localStorage.removeItem('currentJobTime_' + threadId); }
@@ -1129,32 +1130,61 @@ def flask_app():
             progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
             document.getElementById('messages').appendChild(progressDiv);
 
+            // Create AbortController for this request
+            currentAbortController = new AbortController();
+            const abortSignal = currentAbortController.signal;
+
             try {
-                const response = await fetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ thread_id: threadId, message: message }) });
+                const response = await fetch('/api/chat/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ thread_id: threadId, message: message }),
+                    signal: abortSignal
+                });
                 if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
                 let itemsProcessed = [];
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\\n\\n');
-                    buffer = lines.pop();
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try { handleStreamEvent(JSON.parse(line.slice(6)), progressDiv, itemsProcessed); } catch (e) { console.error('Parse error:', e); }
+
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\\n\\n');
+                        buffer = lines.pop();
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try { handleStreamEvent(JSON.parse(line.slice(6)), progressDiv, itemsProcessed); } catch (e) { console.error('Parse error:', e); }
+                            }
                         }
                     }
+                } catch (streamError) {
+                    // Handle stream reading errors (e.g., network interruptions, backgrounding)
+                    if (streamError.name === 'AbortError') {
+                        console.log('Stream aborted');
+                    } else {
+                        throw streamError;
+                    }
+                } finally {
+                    // Always cancel the reader when done
+                    try { await reader.cancel(); } catch (e) { /* ignore */ }
                 }
             } catch (error) {
-                progressDiv.remove();
-                addMessage('Error: ' + error.message, 'error');
-                clearJobId();
+                // Only show error message if it wasn't an intentional abort
+                if (error.name !== 'AbortError') {
+                    progressDiv.remove();
+                    addMessage('Error: ' + error.message, 'error');
+                    clearJobId();
+                } else {
+                    progressDiv.remove();
+                }
+            } finally {
+                currentAbortController = null;
+                setInputEnabled(true);
+                document.getElementById('message-input').focus();
             }
-            setInputEnabled(true);
-            document.getElementById('message-input').focus();
         }
 
         async function addAllToCart() {
@@ -1170,6 +1200,14 @@ def flask_app():
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('expanded'); }
 
         document.addEventListener('click', function(e) { const sidebar = document.getElementById('sidebar'); if (window.innerWidth <= 768 && sidebar.classList.contains('expanded') && !sidebar.contains(e.target)) sidebar.classList.remove('expanded'); });
+
+        // Handle page visibility changes (mobile backgrounding)
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden && currentAbortController) {
+                console.log('Page hidden, aborting active stream');
+                currentAbortController.abort();
+            }
+        });
 
         document.getElementById('message-input').focus();
         renderGroceryList();
