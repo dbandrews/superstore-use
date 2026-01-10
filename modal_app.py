@@ -985,12 +985,148 @@ def flask_app():
         let groceryList = [];
         let currentJobId = null;
         let currentAbortController = null;
+        let reconnectPollInterval = null;
 
-        function saveJobId(jobId) { currentJobId = jobId; localStorage.setItem('currentJobId_' + threadId, jobId); localStorage.setItem('currentJobTime_' + threadId, Date.now().toString()); }
-        function clearJobId() { currentJobId = null; localStorage.removeItem('currentJobId_' + threadId); localStorage.removeItem('currentJobTime_' + threadId); }
-        function getSavedJobId() { const jobId = localStorage.getItem('currentJobId_' + threadId); const jobTime = localStorage.getItem('currentJobTime_' + threadId); if (jobId && jobTime && (Date.now() - parseInt(jobTime)) < 600000) return jobId; return null; }
+        // Cookie utility functions
+        function setCookie(name, value, maxAgeSeconds) {
+            document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAgeSeconds}; SameSite=Lax`;
+        }
+        function getCookie(name) {
+            const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+            return match ? decodeURIComponent(match[2]) : null;
+        }
+        function deleteCookie(name) {
+            document.cookie = `${name}=; path=/; max-age=0`;
+        }
 
-        async function pollJobStatus(jobId) { try { const r = await fetch(`/api/job/${jobId}/status`); return r.ok ? await r.json() : null; } catch (e) { return null; } }
+        // Job ID management using cookies (10 minute TTL)
+        function saveJobId(jobId) {
+            currentJobId = jobId;
+            setCookie('currentJobId_' + threadId, jobId, 600);  // 10 minutes
+        }
+        function clearJobId() {
+            currentJobId = null;
+            deleteCookie('currentJobId_' + threadId);
+        }
+        function getSavedJobId() {
+            return getCookie('currentJobId_' + threadId);
+        }
+
+        async function pollJobStatus(jobId) {
+            try {
+                const r = await fetch(`/api/job/${jobId}/status`);
+                return r.ok ? await r.json() : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Reconstruct UI from job state (for reconnection)
+        function reconstructProgressFromJobState(jobState) {
+            const progressDiv = document.createElement('div');
+            progressDiv.className = 'message assistant';
+            progressDiv.id = 'current-progress';
+            document.getElementById('messages').appendChild(progressDiv);
+
+            // Reconstruct itemStepProgress and itemsProcessed from job state
+            itemStepProgress = {};
+            const itemsProcessed = [];
+
+            // Add completed items
+            if (jobState.items_processed) {
+                jobState.items_processed.forEach(item => {
+                    const icon = item.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>' :
+                                 item.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>' :
+                                 '<span style="color: #f87171;">&#10007;</span>';
+                    itemsProcessed.push({
+                        item: item.item,
+                        status: item.status,
+                        icon: icon,
+                        steps: item.steps || 0
+                    });
+                });
+            }
+
+            // Add in-progress items
+            if (jobState.items_in_progress) {
+                for (const [itemName, progress] of Object.entries(jobState.items_in_progress)) {
+                    itemStepProgress[itemName] = {
+                        step: progress.step || 0,
+                        action: progress.action || '...',
+                        thinking: null,
+                        next_goal: null
+                    };
+                }
+            }
+
+            updateProgressDisplay(progressDiv, itemsProcessed);
+            return progressDiv;
+        }
+
+        // Start polling for job completion (reconnection mode)
+        async function startReconnectPolling(jobId) {
+            console.log('Reconnecting to job:', jobId);
+            currentJobId = jobId;
+            setInputEnabled(false);
+
+            const progressDiv = document.createElement('div');
+            progressDiv.className = 'message assistant';
+            progressDiv.id = 'current-progress';
+            progressDiv.innerHTML = '<div style="opacity: 0.7;">Reconnecting to previous job...</div>';
+            document.getElementById('messages').appendChild(progressDiv);
+
+            // Poll every 2 seconds
+            reconnectPollInterval = setInterval(async () => {
+                const jobState = await pollJobStatus(jobId);
+
+                if (!jobState) {
+                    // Job not found or error
+                    clearInterval(reconnectPollInterval);
+                    reconnectPollInterval = null;
+                    progressDiv.remove();
+                    addMessage('Previous job not found or expired', 'error');
+                    clearJobId();
+                    setInputEnabled(true);
+                    return;
+                }
+
+                // Update progress display from job state
+                progressDiv.remove();
+                const newProgressDiv = reconstructProgressFromJobState(jobState);
+
+                // Check job status
+                if (jobState.status === 'completed') {
+                    clearInterval(reconnectPollInterval);
+                    reconnectPollInterval = null;
+                    newProgressDiv.remove();
+                    if (jobState.final_message) {
+                        addMessage(jobState.final_message, 'assistant');
+                        parseItemsFromResponse(jobState.final_message).forEach(item => addToGroceryList(item.name, item.qty));
+                    } else {
+                        addMessage('Task completed', 'assistant');
+                    }
+                    clearJobId();
+                    setInputEnabled(true);
+                    itemStepProgress = {};
+                } else if (jobState.status === 'error') {
+                    clearInterval(reconnectPollInterval);
+                    reconnectPollInterval = null;
+                    newProgressDiv.remove();
+                    addMessage('Error: ' + (jobState.error || 'Job failed'), 'error');
+                    clearJobId();
+                    setInputEnabled(true);
+                    itemStepProgress = {};
+                } else if (jobState.status === 'expired') {
+                    clearInterval(reconnectPollInterval);
+                    reconnectPollInterval = null;
+                    newProgressDiv.remove();
+                    addMessage('Previous job expired', 'error');
+                    clearJobId();
+                    setInputEnabled(true);
+                    itemStepProgress = {};
+                }
+            }, 2000);
+        }
 
         function addMessage(content, type) {
             const messages = document.getElementById('messages');
@@ -1201,16 +1337,66 @@ def flask_app():
 
         document.addEventListener('click', function(e) { const sidebar = document.getElementById('sidebar'); if (window.innerWidth <= 768 && sidebar.classList.contains('expanded') && !sidebar.contains(e.target)) sidebar.classList.remove('expanded'); });
 
-        // Handle page visibility changes (mobile backgrounding)
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden && currentAbortController) {
-                console.log('Page hidden, aborting active stream');
-                currentAbortController.abort();
+        // Handle page visibility changes (mobile backgrounding and reconnection)
+        document.addEventListener('visibilitychange', async function() {
+            if (document.hidden) {
+                // Page is being backgrounded - abort active stream
+                if (currentAbortController) {
+                    console.log('Page hidden, aborting active stream');
+                    currentAbortController.abort();
+                }
+            } else {
+                // Page is visible again - check for interrupted job
+                const savedJobId = getSavedJobId();
+                if (savedJobId && !isProcessing && !reconnectPollInterval) {
+                    console.log('Page visible, checking for interrupted job:', savedJobId);
+                    // Check if the job still exists and is running
+                    const jobState = await pollJobStatus(savedJobId);
+                    if (jobState && jobState.status === 'running') {
+                        // Reconnect to the running job
+                        await startReconnectPolling(savedJobId);
+                    } else if (jobState && jobState.status === 'completed') {
+                        // Job completed while backgrounded - show results
+                        if (jobState.final_message) {
+                            addMessage(jobState.final_message, 'assistant');
+                            parseItemsFromResponse(jobState.final_message).forEach(item => addToGroceryList(item.name, item.qty));
+                        }
+                        clearJobId();
+                    } else {
+                        // Job not found or errored
+                        clearJobId();
+                    }
+                }
             }
         });
 
-        document.getElementById('message-input').focus();
-        renderGroceryList();
+        // On page load, check for interrupted job and attempt reconnection
+        (async function initReconnection() {
+            loadListFromStorage();
+            renderGroceryList();
+
+            const savedJobId = getSavedJobId();
+            if (savedJobId) {
+                console.log('Found saved job on page load:', savedJobId);
+                const jobState = await pollJobStatus(savedJobId);
+                if (jobState && jobState.status === 'running') {
+                    // Reconnect to the running job
+                    await startReconnectPolling(savedJobId);
+                } else if (jobState && jobState.status === 'completed') {
+                    // Job completed - show results
+                    if (jobState.final_message) {
+                        addMessage(jobState.final_message, 'assistant');
+                        parseItemsFromResponse(jobState.final_message).forEach(item => addToGroceryList(item.name, item.qty));
+                    }
+                    clearJobId();
+                } else {
+                    // Job not found or errored
+                    clearJobId();
+                }
+            }
+
+            document.getElementById('message-input').focus();
+        })();
     </script>
 </body>
 </html>"""
