@@ -470,13 +470,27 @@ def add_item_remote(item: str, index: int) -> dict:
                 IMPORTANT: Before starting, check the page contains "My Shop" and "let's get started by shopping your regulars".
                 If you see these, you are already logged in.
 
-                Steps:
-                1. Use the search bar to search for "{item}"
-                2. From the search results, select the most relevant item
-                3. Click "Add to Cart" or similar button
-                4. Wait for confirmation that item was added (look for cart update or confirmation message)
+                UNDERSTANDING THE ITEM REQUEST:
+                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
+                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
+                - Note the quantity requested (e.g., 6, 2 liters, 500g)
 
-                Complete when you see confirmation the item was added to cart.
+                Steps:
+                1. Use the search bar to search for the PRODUCT NAME (not the full quantity string)
+                   - For "6 apples", search for "apples"
+                   - For "2 liters milk", search for "milk"
+                   - For "500g chicken breast", search for "chicken breast"
+                2. From the search results, select the most relevant item that matches the quantity/size if possible
+                   - If looking for "2 liters milk", prefer 2L milk containers
+                   - If looking for "500g chicken", prefer ~500g packages
+                3. If a specific quantity is requested (like "6 apples"):
+                   - Look for a quantity selector/input field on the product
+                   - Adjust the quantity before adding to cart
+                   - If no quantity selector, you may need to click "Add to Cart" multiple times
+                4. Click "Add to Cart" or similar button
+                5. Wait for confirmation that item was added (look for cart update or confirmation message)
+
+                Complete when you see confirmation the item was added to cart with the correct quantity.
 
                 NOTE: If you see a login page or are not logged in, report this as an error.
                 """,
@@ -586,13 +600,27 @@ def add_item_remote_streaming(item: str, index: int):
                 You need to add "{item}" to the shopping cart on Real Canadian Superstore.
                 Go to https://www.realcanadiansuperstore.ca/en
 
-                Steps:
-                1. Use the search bar to search for "{item}"
-                2. From the search results, select the most relevant item
-                3. Click "Add to Cart" or similar button
-                4. Wait for confirmation that item was added
+                UNDERSTANDING THE ITEM REQUEST:
+                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
+                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
+                - Note the quantity requested (e.g., 6, 2 liters, 500g)
 
-                Complete when you see confirmation the item was added to cart.
+                Steps:
+                1. Use the search bar to search for the PRODUCT NAME (not the full quantity string)
+                   - For "6 apples", search for "apples"
+                   - For "2 liters milk", search for "milk"
+                   - For "500g chicken breast", search for "chicken breast"
+                2. From the search results, select the most relevant item that matches the quantity/size if possible
+                   - If looking for "2 liters milk", prefer 2L milk containers
+                   - If looking for "500g chicken", prefer ~500g packages
+                3. If a specific quantity is requested (like "6 apples"):
+                   - Look for a quantity selector/input field on the product
+                   - Adjust the quantity before adding to cart
+                   - If no quantity selector, you may need to click "Add to Cart" multiple times
+                4. Click "Add to Cart" or similar button
+                5. Wait for confirmation that item was added
+
+                Complete when you see confirmation the item was added to cart with the correct quantity.
                 """,
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
@@ -893,8 +921,9 @@ def flask_app():
         .suggestion:hover { border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.8); }
         @media (max-width: 768px) {
             body { overflow: hidden; position: fixed; width: 100%; height: 100%; }
-            .main-container { flex-direction: column; height: calc(100vh - 53px); }
-            .messages { padding: 16px; padding-bottom: 130px; gap: 12px; }
+            .main-container { flex-direction: column; height: calc(100vh - 53px); overflow: hidden; }
+            .chat-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; height: 100%; }
+            .messages { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px; padding-bottom: 130px; gap: 12px; }
             .message { max-width: 90%; }
             .suggestions { display: none; }
             .input-area { position: fixed; bottom: 56px; left: 0; right: 0; background: #0d1117; z-index: 50; padding: 12px 16px; }
