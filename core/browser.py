@@ -12,6 +12,7 @@ os.environ.setdefault("TIMEOUT_BrowserLaunchEvent", "120")
 os.environ.setdefault("TIMEOUT_BrowserStateRequestEvent", "120")
 
 # Stealth arguments to avoid bot detection (single source of truth)
+# Configured to mimic Firefox on Android to avoid account flagging
 STEALTH_ARGS = [
     "--disable-blink-features=AutomationControlled",  # Hide automation flag
     "--disable-dev-shm-usage",
@@ -21,7 +22,7 @@ STEALTH_ARGS = [
     "--disable-features=IsolateOrigins,site-per-process",
     "--disable-accelerated-2d-canvas",
     "--disable-gpu",
-    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "--user-agent=Mozilla/5.0 (Android 13; Mobile; rv:121.0) Gecko/121.0 Firefox/121.0",
 ]
 
 
