@@ -1124,6 +1124,12 @@ def flask_app():
             setInputEnabled(false);
             document.getElementById('suggestions').style.display = 'none';
 
+            // Clear any existing polling from restored job status
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+
             const progressDiv = document.createElement('div');
             progressDiv.className = 'message assistant';
             progressDiv.id = 'current-progress';
@@ -1202,10 +1208,124 @@ def flask_app():
         document.addEventListener('click', function(e) { const sidebar = document.getElementById('sidebar'); if (window.innerWidth <= 768 && sidebar.classList.contains('expanded') && !sidebar.contains(e.target)) sidebar.classList.remove('expanded'); });
 
         // Handle page visibility changes (mobile backgrounding)
+        let pollingInterval = null;
+
+        function displayJobState(job, progressDiv, itemsProcessed) {
+            // Restore items_processed from job state
+            if (job.items_processed && job.items_processed.length > 0) {
+                itemsProcessed.length = 0; // Clear existing
+                job.items_processed.forEach(p => {
+                    const icon = p.status === 'success' ? '<span style="color: #4ade80;">&#10003;</span>' : p.status === 'uncertain' ? '<span style="color: #fbbf24;">?</span>' : '<span style="color: #f87171;">&#10007;</span>';
+                    itemsProcessed.push({ item: p.item, status: p.status, icon: icon, steps: p.steps || 0 });
+                });
+            }
+            // Restore items_in_progress
+            itemStepProgress = {};
+            if (job.items_in_progress) {
+                for (const [item, progress] of Object.entries(job.items_in_progress)) {
+                    itemStepProgress[item] = { step: progress.step || 0, action: progress.action || '...', thinking: null, next_goal: null };
+                }
+            }
+            updateProgressDisplay(progressDiv, itemsProcessed);
+        }
+
+        async function restoreJobStatus() {
+            const savedJobId = getSavedJobId();
+            if (!savedJobId || isProcessing) return;
+
+            console.log('Restoring job status for:', savedJobId);
+            const job = await pollJobStatus(savedJobId);
+            if (!job) {
+                clearJobId();
+                return;
+            }
+
+            // Create progress div if job is still relevant
+            let progressDiv = document.getElementById('current-progress');
+            let itemsProcessed = [];
+
+            if (!progressDiv) {
+                progressDiv = document.createElement('div');
+                progressDiv.className = 'message assistant';
+                progressDiv.id = 'current-progress';
+                progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+                document.getElementById('messages').appendChild(progressDiv);
+            }
+
+            if (job.status === 'running') {
+                setInputEnabled(false);
+                displayJobState(job, progressDiv, itemsProcessed);
+
+                // Start polling for updates
+                if (pollingInterval) clearInterval(pollingInterval);
+                pollingInterval = setInterval(async () => {
+                    const updatedJob = await pollJobStatus(savedJobId);
+                    if (!updatedJob) {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        clearJobId();
+                        setInputEnabled(true);
+                        return;
+                    }
+
+                    if (updatedJob.status === 'running') {
+                        displayJobState(updatedJob, progressDiv, itemsProcessed);
+                    } else {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+
+                        if (updatedJob.status === 'completed') {
+                            if (updatedJob.final_message) {
+                                progressDiv.remove();
+                                addMessage(updatedJob.final_message, 'assistant');
+                                parseItemsFromResponse(updatedJob.final_message).forEach(item => addToGroceryList(item.name, item.qty));
+                            } else {
+                                const successCount = updatedJob.success_count || itemsProcessed.length;
+                                progressDiv.innerHTML = `<span style="opacity: 0.7;">Complete - ${successCount} items added to cart</span>`;
+                            }
+                        } else if (updatedJob.status === 'error') {
+                            progressDiv.remove();
+                            addMessage('Error: ' + (updatedJob.error || 'Unknown error'), 'error');
+                        } else if (updatedJob.status === 'expired') {
+                            progressDiv.innerHTML = '<span style="opacity: 0.7;">Job expired</span>';
+                        }
+                        clearJobId();
+                        setInputEnabled(true);
+                        itemStepProgress = {};
+                    }
+                }, 2000);
+            } else if (job.status === 'completed') {
+                if (job.final_message) {
+                    progressDiv.remove();
+                    addMessage(job.final_message, 'assistant');
+                    parseItemsFromResponse(job.final_message).forEach(item => addToGroceryList(item.name, item.qty));
+                } else {
+                    displayJobState(job, progressDiv, itemsProcessed);
+                    const successCount = job.success_count || itemsProcessed.length;
+                    progressDiv.innerHTML = `<span style="opacity: 0.7;">Complete - ${successCount} items added to cart</span>`;
+                }
+                clearJobId();
+                setInputEnabled(true);
+            } else if (job.status === 'error') {
+                progressDiv.remove();
+                addMessage('Error: ' + (job.error || 'Unknown error'), 'error');
+                clearJobId();
+                setInputEnabled(true);
+            } else {
+                // expired or unknown status
+                progressDiv.innerHTML = '<span style="opacity: 0.7;">Job expired or unavailable</span>';
+                clearJobId();
+                setInputEnabled(true);
+            }
+        }
+
         document.addEventListener('visibilitychange', function() {
             if (document.hidden && currentAbortController) {
                 console.log('Page hidden, aborting active stream');
                 currentAbortController.abort();
+            } else if (!document.hidden) {
+                // Page became visible - check for active job and restore status
+                restoreJobStatus();
             }
         });
 
