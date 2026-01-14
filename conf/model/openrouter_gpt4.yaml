@@ -1,0 +1,7 @@
+# OpenRouter GPT-4 configuration
+
+provider: openrouter
+name: openai/gpt-4-turbo
+temperature: 0
+api_key_env: OPENROUTER_API_KEY
+base_url: https://openrouter.ai/api/v1

@@ -1,0 +1,30 @@
+# Hydra configuration for Superstore Shopping Agent
+# Switch models by overriding: model=anthropic or model=openrouter_claude
+
+defaults:
+  - model: openai
+  - _self_
+
+# Browser automation settings
+browser:
+  headless: true
+  timeout: 600
+  max_steps: 50
+  fast_mode: false
+
+# Agent settings
+agent:
+  temperature: 0
+  max_retries: 3
+
+# Default grocery list for evaluation
+# Override with: groceries='["milk", "bread"]'
+groceries:
+  - milk
+  - bread
+  - eggs
+
+# Eval settings
+eval:
+  output_dir: ./eval_results
+  screenshot_on_complete: true
