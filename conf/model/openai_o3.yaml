@@ -1,0 +1,6 @@
+# OpenAI O3 model configuration (reasoning model)
+
+provider: openai
+name: o3
+temperature: 0
+api_key_env: OPENAI_API_KEY

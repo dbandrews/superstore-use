@@ -1,0 +1,6 @@
+# OpenAI GPT-4o model configuration
+
+provider: openai
+name: gpt-4o
+temperature: 0
+api_key_env: OPENAI_API_KEY

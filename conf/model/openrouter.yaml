@@ -1,0 +1,17 @@
+# OpenRouter model configuration
+# Access multiple providers through OpenRouter's unified API
+# See https://openrouter.ai/models for available models
+
+provider: openrouter
+name: anthropic/claude-sonnet-4
+temperature: 0
+
+# API key loaded from environment: OPENROUTER_API_KEY
+api_key_env: OPENROUTER_API_KEY
+
+# OpenRouter base URL (required)
+base_url: https://openrouter.ai/api/v1
+
+# Optional: site info for rankings
+# site_url: https://your-site.com
+# site_name: Your App Name
