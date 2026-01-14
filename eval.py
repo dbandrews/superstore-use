@@ -127,6 +127,7 @@ async def add_item_with_agent(
     llm,
     browser,
     max_steps: int = 50,
+    prompt_template: str | None = None,
 ) -> EvalResult:
     """
     Add a single item to cart using browser-use agent.
@@ -136,35 +137,21 @@ async def add_item_with_agent(
         llm: LLM instance to use
         browser: Browser instance
         max_steps: Maximum steps for agent
+        prompt_template: Optional custom prompt template
 
     Returns:
         EvalResult with success/failure info
     """
     from browser_use import Agent
 
+    from core.prompts import get_add_item_prompt
     from core.success import detect_success_from_history
 
     start_time = time.time()
 
     try:
         agent = Agent(
-            task=f"""
-            Add "{item}" to the shopping cart on Real Canadian Superstore.
-            Go to https://www.realcanadiansuperstore.ca/en
-
-            UNDERSTANDING THE ITEM REQUEST:
-            The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk").
-            - Extract the product name to search for
-            - Note the quantity requested
-
-            Steps:
-            1. Search for the PRODUCT NAME (not the full quantity string)
-            2. Select the most relevant item that matches
-            3. If a specific quantity is requested, adjust before adding
-            4. Click "Add to Cart" and wait for confirmation
-
-            Complete when the item is added to cart.
-            """,
+            task=get_add_item_prompt(item=item, template=prompt_template),
             llm=llm,
             browser_session=browser,
         )
@@ -208,6 +195,7 @@ async def verify_cart_contents(
     expected_items: list[str],
     llm,
     browser,
+    prompt_template: str | None = None,
 ) -> dict:
     """
     Navigate to cart and verify items are present.
@@ -216,27 +204,18 @@ async def verify_cart_contents(
         expected_items: List of items that should be in cart
         llm: LLM instance
         browser: Browser instance
+        prompt_template: Optional custom prompt template
 
     Returns:
         Dict with verification results
     """
     from browser_use import Agent
 
+    from core.prompts import get_verify_cart_prompt
+
     try:
         agent = Agent(
-            task=f"""
-            Navigate to the shopping cart at Real Canadian Superstore and verify its contents.
-
-            Expected items: {', '.join(expected_items)}
-
-            Steps:
-            1. Go to https://www.realcanadiansuperstore.ca/en
-            2. Click on the cart icon at the top right
-            3. Read all items currently in the cart
-            4. Report which expected items are present and which are missing
-
-            Extract the exact names of all items in the cart.
-            """,
+            task=get_verify_cart_prompt(expected_items=expected_items, template=prompt_template),
             llm=llm,
             browser_session=browser,
         )
@@ -290,6 +269,11 @@ async def run_eval(cfg: DictConfig) -> EvalRun:
     """
     from core.browser import create_browser, get_profile_dir
     from core.llm import create_llm_from_config, get_model_info
+
+    # Get prompt templates from config (if any)
+    prompts_cfg = cfg.get("prompts", {})
+    add_item_template = prompts_cfg.get("add_item")
+    verify_cart_template = prompts_cfg.get("verify_cart")
 
     # Get model info
     model_info = get_model_info(cfg.model)
@@ -355,6 +339,7 @@ async def run_eval(cfg: DictConfig) -> EvalRun:
                 llm=llm,
                 browser=browser,
                 max_steps=cfg.browser.get("max_steps", 50),
+                prompt_template=add_item_template,
             )
             run.results.append(result)
 
@@ -385,6 +370,7 @@ async def run_eval(cfg: DictConfig) -> EvalRun:
                 expected_items=successful_items,
                 llm=llm,
                 browser=browser,
+                prompt_template=verify_cart_template,
             )
             print(f"Cart verification: {run.cart_verification}")
         else:

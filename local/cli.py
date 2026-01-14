@@ -18,6 +18,7 @@ from browser_use import Agent, ChatOpenAI
 from dotenv import load_dotenv
 
 from core.browser import create_browser, get_profile_dir
+from core.prompts import get_add_item_prompt, get_checkout_prompt, get_login_prompt
 
 # Chrome lock files that should be removed when copying profiles
 CHROME_LOCK_FILES = [
@@ -156,21 +157,7 @@ async def login_and_save(headless: bool = True):
 
     try:
         agent = Agent(
-            task=f"""
-            Navigate to https://www.realcanadiansuperstore.ca/en and log in.
-
-            Steps:
-            1. Go to https://www.realcanadiansuperstore.ca/en
-            2. If you see "My Shop" and "let's get started by shopping your regulars",
-               you are already logged in - call done.
-            3. Otherwise, click "Sign in" at top right.
-            4. Enter username: {username}
-            5. Enter password: {password}
-            6. Click the sign in button.
-            7. Wait for "My Account" at top right to confirm login.
-
-            Complete when logged in.
-            """,
+            task=get_login_prompt(username=username, password=password),
             llm=ChatOpenAI(model="gpt-4.1"),
             browser_session=browser,
         )
@@ -253,26 +240,7 @@ def add_single_item_process(args: tuple[str, int, int, tuple[int, int], str]) ->
 
         try:
             agent = Agent(
-                task=f"""
-                Add "{item}" to the shopping cart on Real Canadian Superstore.
-                Go to https://www.realcanadiansuperstore.ca/en
-
-                UNDERSTANDING THE ITEM REQUEST:
-                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
-                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
-                - Note the quantity requested (e.g., 6, 2 liters, 500g)
-
-                Steps:
-                1. Search for the PRODUCT NAME (not the full quantity string)
-                   - For "6 apples", search for "apples"
-                   - For "2 liters milk", search for "milk"
-                2. Select the most relevant item that matches the quantity/size if possible
-                3. If a specific quantity is requested (like "6 apples"):
-                   - Look for a quantity selector and adjust before adding to cart
-                4. Click "Add to Cart" and wait for confirmation
-
-                Complete when the item is added to cart with the correct quantity.
-                """,
+                task=get_add_item_prompt(item=item),
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
@@ -379,20 +347,7 @@ async def checkout(browser):
 
     # Step 1: Navigate to cart and proceed to checkout page (but don't place order yet)
     agent = Agent(
-        task="""
-        Go to the https://www.realcanadiansuperstore.ca/ and proceed through the checkout process.
-        The cart option should be at top right of the main page.
-
-        Navigate through all checkout steps:
-        - Delivery details: Click "select a time" and pick the next available time slot.
-        - Item details
-        - Contact details
-        - Driver tip
-        - Payment
-
-        Each step will need interaction and need to hit "Save & Continue" after each one.
-        Stop when you reach the final order review page where the "Place Order" button is visible and a dark green color.
-        """,
+        task=get_checkout_prompt(),
         llm=ChatOpenAI(model="gpt-4.1"),
         browser_session=browser,
     )

@@ -244,6 +244,8 @@ def login_remote() -> dict:
     """
     from browser_use import Agent, ChatOpenAI
 
+    from core.prompts import get_login_prompt
+
     async def _login():
         username = os.environ.get("SUPERSTORE_USER")
         password = os.environ.get("SUPERSTORE_PASSWORD")
@@ -258,21 +260,7 @@ def login_remote() -> dict:
 
         try:
             agent = Agent(
-                task=f"""
-                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
-
-                Steps:
-                1. Go to https://www.realcanadiansuperstore.ca/en
-                2. If you see "My Shop" and "let's get started by shopping your regulars",
-                   you are already logged in - call done.
-                3. Otherwise, click "Sign in" at top right.
-                4. Enter username: {username}
-                5. Enter password: {password}
-                6. Click the sign in button.
-                7. Wait for "My Account" at top right to confirm login.
-
-                Complete when logged in.
-                """,
+                task=get_login_prompt(username=username, password=password),
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
@@ -319,6 +307,8 @@ def login_remote_streaming():
 
     from browser_use import Agent, ChatOpenAI
 
+    from core.prompts import get_login_prompt
+
     step_events: queue.Queue[dict] = queue.Queue()
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
 
@@ -356,21 +346,7 @@ def login_remote_streaming():
 
         try:
             agent = Agent(
-                task=f"""
-                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
-
-                Steps:
-                1. Go to https://www.realcanadiansuperstore.ca/en
-                2. If you see "My Shop" and "let's get started by shopping your regulars",
-                   you are already logged in - call done.
-                3. Otherwise, click "Sign in" at top right.
-                4. Enter username: {username}
-                5. Enter password: {password}
-                6. Click the sign in button.
-                7. Wait for "My Account" at top right to confirm login.
-
-                Complete when logged in.
-                """,
+                task=get_login_prompt(username=username, password=password),
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
@@ -456,44 +432,15 @@ def add_item_remote(item: str, index: int) -> dict:
     """
     from browser_use import Agent, ChatOpenAI
 
+    from core.prompts import get_add_item_prompt
+
     async def _add_item():
         print(f"[Container {index}] Starting to add item: {item}")
         browser = create_browser(shared_profile=True)
 
         try:
             agent = Agent(
-                task=f"""
-                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
-
-                Go to https://www.realcanadiansuperstore.ca/en.
-
-                IMPORTANT: Before starting, check the page contains "My Shop" and "let's get started by shopping your regulars".
-                If you see these, you are already logged in.
-
-                UNDERSTANDING THE ITEM REQUEST:
-                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
-                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
-                - Note the quantity requested (e.g., 6, 2 liters, 500g)
-
-                Steps:
-                1. Use the search bar to search for the PRODUCT NAME (not the full quantity string)
-                   - For "6 apples", search for "apples"
-                   - For "2 liters milk", search for "milk"
-                   - For "500g chicken breast", search for "chicken breast"
-                2. From the search results, select the most relevant item that matches the quantity/size if possible
-                   - If looking for "2 liters milk", prefer 2L milk containers
-                   - If looking for "500g chicken", prefer ~500g packages
-                3. If a specific quantity is requested (like "6 apples"):
-                   - Look for a quantity selector/input field on the product
-                   - Adjust the quantity before adding to cart
-                   - If no quantity selector, you may need to click "Add to Cart" multiple times
-                4. Click "Add to Cart" or similar button
-                5. Wait for confirmation that item was added (look for cart update or confirmation message)
-
-                Complete when you see confirmation the item was added to cart with the correct quantity.
-
-                NOTE: If you see a login page or are not logged in, report this as an error.
-                """,
+                task=get_add_item_prompt(item=item, check_login=True),
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
@@ -554,6 +501,8 @@ def add_item_remote_streaming(item: str, index: int):
 
     from browser_use import Agent, ChatOpenAI
 
+    from core.prompts import get_add_item_prompt
+
     step_events: queue.Queue[dict] = queue.Queue()
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
 
@@ -596,32 +545,7 @@ def add_item_remote_streaming(item: str, index: int):
 
         try:
             agent = Agent(
-                task=f"""
-                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
-                Go to https://www.realcanadiansuperstore.ca/en
-
-                UNDERSTANDING THE ITEM REQUEST:
-                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
-                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
-                - Note the quantity requested (e.g., 6, 2 liters, 500g)
-
-                Steps:
-                1. Use the search bar to search for the PRODUCT NAME (not the full quantity string)
-                   - For "6 apples", search for "apples"
-                   - For "2 liters milk", search for "milk"
-                   - For "500g chicken breast", search for "chicken breast"
-                2. From the search results, select the most relevant item that matches the quantity/size if possible
-                   - If looking for "2 liters milk", prefer 2L milk containers
-                   - If looking for "500g chicken", prefer ~500g packages
-                3. If a specific quantity is requested (like "6 apples"):
-                   - Look for a quantity selector/input field on the product
-                   - Adjust the quantity before adding to cart
-                   - If no quantity selector, you may need to click "Add to Cart" multiple times
-                4. Click "Add to Cart" or similar button
-                5. Wait for confirmation that item was added
-
-                Complete when you see confirmation the item was added to cart with the correct quantity.
-                """,
+                task=get_add_item_prompt(item=item),
                 llm=ChatOpenAI(model="gpt-4.1"),
                 browser_session=browser,
             )
