@@ -106,8 +106,7 @@ def _ensure_logged_in() -> tuple[bool, str]:
             return False, f"Login failed: {error_msg}"
     except modal.exception.NotFoundError:
         return False, (
-            f"Error: Modal app '{MODAL_APP_NAME}' not found. "
-            "Please deploy it first with: modal deploy modal_app.py"
+            f"Error: Modal app '{MODAL_APP_NAME}' not found. Please deploy it first with: modal deploy modal_app.py"
         )
     except Exception as e:
         print(f"[Agent] Login error: {e}")
@@ -177,8 +176,7 @@ def _ensure_logged_in_streaming() -> Generator[dict, None, tuple[bool, str]]:
 
     except modal.exception.NotFoundError:
         error_msg = (
-            f"Error: Modal app '{MODAL_APP_NAME}' not found. "
-            "Please deploy it first with: modal deploy modal_app.py"
+            f"Error: Modal app '{MODAL_APP_NAME}' not found. Please deploy it first with: modal deploy modal_app.py"
         )
         yield {"type": "login_complete", "status": "failed", "message": error_msg, "steps": 0}
         return False, error_msg
@@ -258,22 +256,21 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
                 event_queue.put(event)
         except Exception as e:
             # If streaming fails, emit a failure event
-            event_queue.put({
-                "type": "complete",
-                "item": item,
-                "index": index,
-                "status": "failed",
-                "message": str(e),
-                "steps": 0,
-            })
+            event_queue.put(
+                {
+                    "type": "complete",
+                    "item": item,
+                    "index": index,
+                    "status": "failed",
+                    "message": str(e),
+                    "steps": 0,
+                }
+            )
 
     try:
         # Start all streams in parallel using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=len(items)) as executor:
-            futures = [
-                executor.submit(consume_stream, item, i)
-                for i, item in enumerate(items, 1)
-            ]
+            futures = [executor.submit(consume_stream, item, i) for i, item in enumerate(items, 1)]
 
             results = []
             completed_count = 0
@@ -334,10 +331,7 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
             uncertain_items = ", ".join(r.get("item", "?") for r in uncertain)
             summary += f"\n\nUncertain (may have been added): {uncertain_items}"
         if failures:
-            failed_items = ", ".join(
-                f"{r.get('item', '?')} ({r.get('message', 'error')[:50]})"
-                for r in failures
-            )
+            failed_items = ", ".join(f"{r.get('item', '?')} ({r.get('message', 'error')[:50]})" for r in failures)
             summary += f"\n\nFailed to add: {failed_items}"
 
         yield {
@@ -352,8 +346,7 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
 
     except modal.exception.NotFoundError:
         error_msg = (
-            f"Error: Modal app '{MODAL_APP_NAME}' not found. "
-            "Please deploy it first with: modal deploy modal_app.py"
+            f"Error: Modal app '{MODAL_APP_NAME}' not found. Please deploy it first with: modal deploy modal_app.py"
         )
         yield {"type": "error", "message": error_msg}
         return error_msg
@@ -411,8 +404,7 @@ def view_cart() -> str:
         Description of items currently in cart.
     """
     return (
-        "Cart viewing is not yet available via Modal. "
-        "Please check the Superstore website directly to view your cart."
+        "Cart viewing is not yet available via Modal. Please check the Superstore website directly to view your cart."
     )
 
 
@@ -435,7 +427,7 @@ def create_chat_agent():
     Custom stream events are emitted for item processing progress.
     """
     # Create the LLM with streaming-aware tools bound
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    llm = ChatOpenAI(model="gpt-4.1", temperature=0)
     llm_with_tools = llm.bind_tools(STREAMING_TOOLS)
 
     def chat_node(state: GroceryState):
@@ -498,9 +490,7 @@ def run_cli():
                 break
 
             # Invoke the agent
-            result = agent.invoke(
-                {"messages": [HumanMessage(content=user_input)]}, config=config
-            )
+            result = agent.invoke({"messages": [HumanMessage(content=user_input)]}, config=config)
 
             # Print the assistant's response
             last_message = result["messages"][-1]

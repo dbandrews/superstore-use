@@ -14,7 +14,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from browser_use import Agent, ChatOpenAI
+from browser_use import Agent, ChatGroq
 from dotenv import load_dotenv
 
 from core.browser import create_browser, get_profile_dir
@@ -27,6 +27,8 @@ CHROME_LOCK_FILES = [
     "lockfile",
     "parent.lock",
 ]
+
+MODEL_NAME = "openai/gpt-oss-120b"
 
 
 def _ignore_chrome_lock_files(directory: str, files: list[str]) -> list[str]:
@@ -184,12 +186,13 @@ async def login_and_save(headless: bool = True):
             4. Enter username: {username}
             5. Enter password: {password}
             6. Click the sign in button.
-            7. Wait for "My Account" at top right to confirm login.
+            7. Wait for "My Account" at top right to confirm login. 
 
             Complete when logged in.
             """,
-            llm=ChatOpenAI(model="gpt-4.1"),
+            llm=ChatGroq(model=MODEL_NAME),
             browser_session=browser,
+            use_vision=False,
         )
 
         await agent.run(max_steps=50)
@@ -292,8 +295,9 @@ def add_single_item_process(args: tuple[str, int, int, tuple[int, int], str]) ->
 
                 Complete when the item is added to cart with the correct quantity.
                 """,
-                llm=ChatOpenAI(model="gpt-4.1"),
+                llm=ChatGroq(model=MODEL_NAME),
                 browser_session=browser,
+                use_vision=False,
             )
             await agent.run(max_steps=50)
             print(f"[OK] [{index}/{total}] Added: {item}")
@@ -329,10 +333,7 @@ async def add_items_to_cart(items: list[str], x_offset: int = 1080):
     # Each worker gets its own copy of the browser profile with lock files removed
     base_profile = Path("./superstore-profile")
     print(f"[Profile] Copying browser profile for {len(items)} workers...")
-    temp_profiles = [
-        copy_profile_to_temp(base_profile, prefix=f"browser-worker-{i}")
-        for i in range(1, len(items) + 1)
-    ]
+    temp_profiles = [copy_profile_to_temp(base_profile, prefix=f"browser-worker-{i}") for i in range(1, len(items) + 1)]
 
     process_args = [
         (item, i, len(items), positions[min(i - 1, len(positions) - 1)], str(temp_profiles[i - 1]))
@@ -412,8 +413,9 @@ async def checkout(browser):
         Each step will need interaction and need to hit "Save & Continue" after each one.
         Stop when you reach the final order review page where the "Place Order" button is visible and a dark green color.
         """,
-        llm=ChatOpenAI(model="gpt-4.1"),
+        llm=ChatGroq(model=MODEL_NAME),
         browser_session=browser,
+        use_vision=False,
     )
     await agent.run(max_steps=100)
 
@@ -476,9 +478,7 @@ def run_shop(args):
 
 def main():
     """Main entry point for the CLI."""
-    parser = argparse.ArgumentParser(
-        description="AI-powered grocery shopping agent for Real Canadian Superstore"
-    )
+    parser = argparse.ArgumentParser(description="AI-powered grocery shopping agent for Real Canadian Superstore")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Login command

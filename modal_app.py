@@ -38,6 +38,9 @@ job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=
 # Import shared config from core to avoid duplication
 from core.browser import STEALTH_ARGS, get_proxy_config
 
+# Model configuration - single place to set the model
+MODEL_NAME = "openai/gpt-oss-120b"
+
 # Success indicators for detecting if item was added to cart
 SUCCESS_INDICATORS = [
     "added to cart",
@@ -161,6 +164,7 @@ def create_browser(shared_profile: bool = False, use_proxy: bool = True):
         user_data_dir=user_data_dir,
         proxy=proxy_settings,
         args=STEALTH_ARGS,
+        enable_default_extensions=False,  # Skip downloading uBlock, cookie consent, etc.
     )
 
 
@@ -203,7 +207,7 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("groq-secret"),
         modal.Secret.from_name("oxy-proxy"),
         modal.Secret.from_name("superstore"),
     ],
@@ -223,7 +227,7 @@ def login_remote() -> dict:
 
     This must be called before add_item_remote will work.
     """
-    from browser_use import Agent, ChatOpenAI
+    from browser_use import Agent, ChatGroq
 
     async def _login():
         username = os.environ.get("SUPERSTORE_USER")
@@ -254,7 +258,8 @@ def login_remote() -> dict:
 
                 Complete when logged in.
                 """,
-                llm=ChatOpenAI(model="gpt-4.1"),
+                llm=ChatGroq(model=MODEL_NAME),
+                use_vision=False,
                 browser_session=browser,
             )
 
@@ -278,7 +283,7 @@ def login_remote() -> dict:
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("groq-secret"),
         modal.Secret.from_name("oxy-proxy"),
         modal.Secret.from_name("superstore"),
     ],
@@ -298,7 +303,7 @@ def login_remote_streaming():
     import queue
     import threading
 
-    from browser_use import Agent, ChatOpenAI
+    from browser_use import Agent, ChatGroq
 
     step_events: queue.Queue[dict] = queue.Queue()
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
@@ -352,7 +357,8 @@ def login_remote_streaming():
 
                 Complete when logged in.
                 """,
-                llm=ChatOpenAI(model="gpt-4.1"),
+                llm=ChatGroq(model=MODEL_NAME),
+                use_vision=False,
                 browser_session=browser,
             )
 
@@ -415,7 +421,7 @@ def login_remote_streaming():
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("groq-secret"),
         modal.Secret.from_name("oxy-proxy"),
         modal.Secret.from_name("superstore"),
     ],
@@ -435,7 +441,7 @@ def add_item_remote(item: str, index: int) -> dict:
 
     Uses shared profile on volume (created by login_remote).
     """
-    from browser_use import Agent, ChatOpenAI
+    from browser_use import Agent, ChatGroq
 
     async def _add_item():
         print(f"[Container {index}] Starting to add item: {item}")
@@ -475,7 +481,8 @@ def add_item_remote(item: str, index: int) -> dict:
 
                 NOTE: If you see a login page or are not logged in, report this as an error.
                 """,
-                llm=ChatOpenAI(model="gpt-4.1"),
+                llm=ChatGroq(model=MODEL_NAME),
+                use_vision=False,
                 browser_session=browser,
             )
 
@@ -513,7 +520,7 @@ def add_item_remote(item: str, index: int) -> dict:
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("groq-secret"),
         modal.Secret.from_name("oxy-proxy"),
         modal.Secret.from_name("superstore"),
     ],
@@ -533,7 +540,7 @@ def add_item_remote_streaming(item: str, index: int):
     import queue
     import threading
 
-    from browser_use import Agent, ChatOpenAI
+    from browser_use import Agent, ChatGroq
 
     step_events: queue.Queue[dict] = queue.Queue()
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
@@ -603,7 +610,8 @@ def add_item_remote_streaming(item: str, index: int):
 
                 Complete when you see confirmation the item was added to cart with the correct quantity.
                 """,
-                llm=ChatOpenAI(model="gpt-4.1"),
+                llm=ChatGroq(model=MODEL_NAME),
+                use_vision=False,
                 browser_session=browser,
             )
 
