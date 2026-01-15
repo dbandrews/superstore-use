@@ -32,21 +32,11 @@ job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=
 
 
 # =============================================================================
-# Shared Configuration (duplicated from core for Modal image build)
+# Shared Configuration (imported from core module)
 # =============================================================================
 
-# Stealth arguments to avoid bot detection
-STEALTH_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-    "--disable-dev-shm-usage",
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-web-security",
-    "--disable-features=IsolateOrigins,site-per-process",
-    "--disable-accelerated-2d-canvas",
-    "--disable-gpu",
-    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
+# Import shared config from core to avoid duplication
+from core.browser import STEALTH_ARGS, get_proxy_config
 
 # Success indicators for detecting if item was added to cart
 SUCCESS_INDICATORS = [
@@ -58,18 +48,6 @@ SUCCESS_INDICATORS = [
     "added to your cart",
     "quantity updated",
 ]
-
-
-def get_proxy_config() -> Optional[dict]:
-    """Get proxy configuration from environment variables."""
-    proxy_server = os.environ.get("PROXY_SERVER")
-    proxy_username = os.environ.get("PROXY_USERNAME")
-    proxy_password = os.environ.get("PROXY_PASSWORD")
-
-    if not all([proxy_server, proxy_username, proxy_password]):
-        return None
-
-    return {"server": proxy_server, "username": proxy_username, "password": proxy_password}
 
 
 # =============================================================================
@@ -148,12 +126,14 @@ chat_image = (
 # =============================================================================
 
 
-def create_browser(shared_profile: bool = False):
+def create_browser(shared_profile: bool = False, use_proxy: bool = True):
     """Create browser configured for Modal's containerized environment.
 
     Args:
         shared_profile: If True, use profile on volume for persistence across containers.
                         If False, use profile from image (for isolated containers).
+        use_proxy: If True, use proxy settings from environment. Default True.
+                   Set to False for login to avoid proxy IP blocking by auth servers.
     """
     from browser_use import Browser
     from browser_use.browser.profile import ProxySettings
@@ -162,14 +142,15 @@ def create_browser(shared_profile: bool = False):
     user_data_dir = "/session/profile" if shared_profile else "/app/superstore-profile"
 
     # Build browser config with optional proxy
-    proxy_config = get_proxy_config()
     proxy_settings = None
-    if proxy_config:
-        proxy_settings = ProxySettings(
-            server=proxy_config["server"],
-            username=proxy_config["username"],
-            password=proxy_config["password"],
-        )
+    if use_proxy:
+        proxy_config = get_proxy_config()
+        if proxy_config:
+            proxy_settings = ProxySettings(
+                server=proxy_config["server"],
+                username=proxy_config["username"],
+                password=proxy_config["password"],
+            )
 
     return Browser(
         headless=True,

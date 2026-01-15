@@ -34,6 +34,23 @@ def _ignore_chrome_lock_files(directory: str, files: list[str]) -> list[str]:
     return [f for f in files if f in CHROME_LOCK_FILES]
 
 
+def _clean_chrome_lock_files(profile_dir: str) -> None:
+    """Remove Chrome lock files from a profile directory.
+
+    This should be called after browser is closed to prepare profile for
+    copying to Modal deployment.
+    """
+    profile_path = Path(profile_dir)
+    for lock_file in CHROME_LOCK_FILES:
+        lock_path = profile_path / lock_file
+        if lock_path.exists() or lock_path.is_symlink():
+            try:
+                lock_path.unlink()
+                print(f"Cleaned lock file: {lock_file}")
+            except OSError as e:
+                print(f"Warning: Could not remove {lock_file}: {e}")
+
+
 def copy_profile_to_temp(source_profile: Path, prefix: str = "browser-worker") -> Path:
     """Copy browser profile to a temp directory, skipping Chrome lock files.
 
@@ -185,6 +202,8 @@ async def login_and_save(headless: bool = True):
         return {"status": "failed", "message": str(e)}
     finally:
         await browser.kill()
+        # Clean lock files so profile can be copied to Modal
+        _clean_chrome_lock_files(user_data_dir)
 
 
 def run_login(args):
