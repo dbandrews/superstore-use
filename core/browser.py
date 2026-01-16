@@ -96,13 +96,13 @@ def create_browser(
 
     # Timing settings: faster for local, slower for Modal
     if fast_mode:
-        wait_between_actions = 0.1
-        minimum_wait_page_load_time = 0.1
-        wait_for_network_idle = 1.5
+        wait_between_actions = 2.5
+        minimum_wait_page_load_time = 2.5
+        wait_for_network_idle = 2.5
     else:
-        wait_between_actions = 1.5
-        minimum_wait_page_load_time = 1.5
-        wait_for_network_idle = 1.5
+        wait_between_actions = 2.5
+        minimum_wait_page_load_time = 2.5
+        wait_for_network_idle = 2.5
 
     # Build browser kwargs
     browser_kwargs = {
