@@ -214,27 +214,8 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
         yield {"type": "error", "message": "No items provided"}
         return "No items provided to add to cart."
 
-    # Ensure logged in before adding items - use streaming for progress updates
-    global _logged_in
-    if _logged_in:
-        yield {"type": "status", "message": "Already logged in"}
-    else:
-        yield {"type": "status", "message": "Logging in to Superstore..."}
-
-    # Use streaming login and forward all events
-    login_gen = _ensure_logged_in_streaming()
-    login_ok = False
-    login_msg = ""
-
-    for event in login_gen:
-        yield event  # Forward login progress events to caller
-        if event.get("type") == "login_complete":
-            login_ok = event.get("status") == "success"
-            login_msg = event.get("message", "")
-
-    if not login_ok:
-        yield {"type": "error", "message": f"Login failed: {login_msg}"}
-        return f"Cannot add items: {login_msg}"
+    # Skip login - assume user is already logged in via browser profile
+    yield {"type": "status", "message": "Adding items to cart..."}
 
     total = len(items)
 
