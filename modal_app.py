@@ -707,7 +707,7 @@ def add_item_remote_streaming(item: str, index: int):
 
 
 # =============================================================================
-# Browser Session for User Control
+# Browser Session for User Control (CDP-based with real-time streaming)
 # =============================================================================
 
 # Store for active browser sessions
@@ -734,125 +734,368 @@ browser_session_dict = modal.Dict.from_name("superstore-browser-sessions", creat
     allow_concurrent_inputs=100,
 )
 class BrowserSession:
-    """Interactive browser session that allows user control via screenshot streaming and input events."""
+    """Interactive browser session using CDP for real-time screencast streaming."""
 
     def __init__(self):
-        self.browser = None
-        self.context = None
-        self.page = None
+        self.browser_session = None
+        self.cdp_session = None
         self.session_id = None
+        self.screencast_active = False
+        self.frame_queue = None
 
     @modal.enter()
     async def setup(self):
-        """Initialize browser on container start."""
+        """Initialize browser-use BrowserSession on container start."""
         import uuid
-        from playwright.async_api import async_playwright
+        import asyncio
+        from browser_use.browser.session import BrowserSession as BUBrowserSession
+        from browser_use.browser.profile import ProxySettings
 
         self.session_id = str(uuid.uuid4())[:8]
-        print(f"[BrowserSession {self.session_id}] Initializing...")
-
-        self.playwright = await async_playwright().start()
+        self.frame_queue = asyncio.Queue(maxsize=10)
+        print(f"[BrowserSession {self.session_id}] Initializing with browser-use...")
 
         # Get proxy config
         proxy_config = get_proxy_config()
         proxy_settings = None
         if proxy_config:
-            proxy_settings = {
-                "server": proxy_config["server"],
-                "username": proxy_config["username"],
-                "password": proxy_config["password"],
-            }
+            proxy_settings = ProxySettings(
+                server=proxy_config["server"],
+                username=proxy_config["username"],
+                password=proxy_config["password"],
+            )
 
-        # Launch browser with stealth args
-        self.browser = await self.playwright.chromium.launch_persistent_context(
-            user_data_dir="/session/profile",
+        # Create browser-use BrowserSession
+        self.browser_session = BUBrowserSession(
             headless=True,
-            viewport={"width": 1280, "height": 800},
-            args=STEALTH_ARGS,
+            user_data_dir="/session/profile",
             proxy=proxy_settings,
+            args=STEALTH_ARGS,
         )
 
-        # Get or create page
-        if self.browser.pages:
-            self.page = self.browser.pages[0]
-        else:
-            self.page = await self.browser.new_page()
+        # Start the browser and connect via CDP
+        await self.browser_session.start()
 
-        print(f"[BrowserSession {self.session_id}] Browser ready")
+        # Get CDP session for the current page
+        self.cdp_session = await self.browser_session.get_or_create_cdp_session()
+
+        print(f"[BrowserSession {self.session_id}] Browser ready with CDP")
 
     @modal.exit()
     async def cleanup(self):
         """Clean up browser on container shutdown."""
-        if self.browser:
-            await self.browser.close()
-        if hasattr(self, 'playwright') and self.playwright:
-            await self.playwright.stop()
+        if self.screencast_active:
+            try:
+                await self._stop_screencast()
+            except Exception:
+                pass
+
+        if self.browser_session:
+            await self.browser_session.close()
         print(f"[BrowserSession {self.session_id}] Cleaned up")
+
+    async def _start_screencast(self):
+        """Start CDP screencast and register frame handler."""
+        if self.screencast_active:
+            return
+
+        # Register frame handler
+        def on_frame(event_data, session_id_from_event):
+            try:
+                # Put frame in queue (non-blocking, drop if full)
+                self.frame_queue.put_nowait({
+                    "data": event_data.get("data", ""),
+                    "metadata": event_data.get("metadata", {}),
+                    "sessionId": event_data.get("sessionId", 0),
+                })
+            except Exception:
+                pass  # Queue full, drop frame
+
+        # Register the callback
+        self.browser_session.cdp_client.register.Page.screencastFrame(on_frame)
+
+        # Start screencast
+        await self.cdp_session.cdp_client.send.Page.startScreencast(
+            params={
+                "format": "jpeg",
+                "quality": 70,
+                "maxWidth": 1280,
+                "maxHeight": 800,
+                "everyNthFrame": 1,
+            },
+            session_id=self.cdp_session.session_id,
+        )
+        self.screencast_active = True
+        print(f"[BrowserSession {self.session_id}] Screencast started")
+
+    async def _stop_screencast(self):
+        """Stop CDP screencast."""
+        if not self.screencast_active:
+            return
+
+        try:
+            await self.cdp_session.cdp_client.send.Page.stopScreencast(
+                session_id=self.cdp_session.session_id,
+            )
+        except Exception as e:
+            print(f"[BrowserSession {self.session_id}] Stop screencast error: {e}")
+
+        self.screencast_active = False
+        print(f"[BrowserSession {self.session_id}] Screencast stopped")
+
+    async def _ack_frame(self, frame_session_id: int):
+        """Acknowledge receipt of a screencast frame."""
+        try:
+            await self.cdp_session.cdp_client.send.Page.screencastFrameAck(
+                params={"sessionId": frame_session_id},
+                session_id=self.cdp_session.session_id,
+            )
+        except Exception:
+            pass
 
     @modal.method()
     async def navigate(self, url: str) -> dict:
         """Navigate to a URL."""
         try:
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            return {"status": "success", "url": self.page.url}
+            await self.browser_session.navigate_to(url)
+            return {"status": "success", "url": await self._get_url()}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
     @modal.method()
     async def get_screenshot(self) -> bytes:
-        """Get current page screenshot as PNG bytes."""
+        """Get current page screenshot as PNG bytes (fallback method)."""
         try:
-            return await self.page.screenshot(type="png")
+            screenshot = await self.browser_session.take_screenshot(full_page=False)
+            return screenshot if screenshot else b""
         except Exception as e:
             print(f"[BrowserSession] Screenshot error: {e}")
             return b""
 
     @modal.method()
+    async def start_streaming(self) -> dict:
+        """Start screencast streaming."""
+        try:
+            await self._start_screencast()
+            return {"status": "success", "message": "Screencast started"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @modal.method()
+    async def get_frame(self) -> dict:
+        """Get the next screencast frame from the queue."""
+        import asyncio
+
+        try:
+            # Wait up to 2 seconds for a frame
+            frame = await asyncio.wait_for(self.frame_queue.get(), timeout=2.0)
+
+            # Acknowledge the frame
+            await self._ack_frame(frame.get("sessionId", 0))
+
+            return {
+                "status": "success",
+                "frame": frame.get("data", ""),
+                "metadata": frame.get("metadata", {}),
+            }
+        except asyncio.TimeoutError:
+            return {"status": "timeout", "message": "No frame available"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @modal.method()
+    def stream_frames(self):
+        """Generator that yields screencast frames. Use with remote_gen()."""
+        import asyncio
+        import time
+
+        async def _stream():
+            await self._start_screencast()
+            last_frame_time = time.time()
+
+            while True:
+                try:
+                    # Get frame with timeout
+                    frame = await asyncio.wait_for(self.frame_queue.get(), timeout=0.5)
+
+                    # Acknowledge the frame
+                    await self._ack_frame(frame.get("sessionId", 0))
+
+                    yield json.dumps({
+                        "type": "frame",
+                        "data": frame.get("data", ""),
+                        "metadata": frame.get("metadata", {}),
+                    })
+
+                    last_frame_time = time.time()
+
+                except asyncio.TimeoutError:
+                    # Send keepalive if no frame for a while
+                    if time.time() - last_frame_time > 1.0:
+                        yield json.dumps({"type": "keepalive"})
+                except Exception as e:
+                    yield json.dumps({"type": "error", "message": str(e)})
+                    break
+
+        # Run the async generator
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            gen = _stream()
+            while True:
+                try:
+                    frame = loop.run_until_complete(gen.__anext__())
+                    yield frame
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.close()
+
+    async def _get_url(self) -> str:
+        """Get current page URL via CDP."""
+        try:
+            # Use Runtime.evaluate to get window.location.href
+            result = await self.cdp_session.cdp_client.send.Runtime.evaluate(
+                params={"expression": "window.location.href"},
+                session_id=self.cdp_session.session_id,
+            )
+            return result.get("result", {}).get("value", "unknown")
+        except Exception:
+            return "unknown"
+
+    @modal.method()
     async def get_state(self) -> dict:
         """Get current browser state."""
         try:
+            url = await self._get_url()
+
+            # Get title
+            result = await self.cdp_session.cdp_client.send.Runtime.evaluate(
+                params={"expression": "document.title"},
+                session_id=self.cdp_session.session_id,
+            )
+            title = result.get("result", {}).get("value", "")
+
             return {
                 "session_id": self.session_id,
-                "url": self.page.url,
-                "title": await self.page.title(),
+                "url": url,
+                "title": title,
+                "streaming": self.screencast_active,
             }
         except Exception as e:
             return {"session_id": self.session_id, "error": str(e)}
 
     @modal.method()
     async def click(self, x: int, y: int) -> dict:
-        """Click at coordinates."""
+        """Click at coordinates using CDP Input domain."""
         try:
-            await self.page.mouse.click(x, y)
-            await self.page.wait_for_timeout(500)  # Brief wait for page reaction
+            # Mouse pressed
+            await self.cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+                params={
+                    "type": "mousePressed",
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "clickCount": 1,
+                },
+                session_id=self.cdp_session.session_id,
+            )
+
+            # Mouse released
+            await self.cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+                params={
+                    "type": "mouseReleased",
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "clickCount": 1,
+                },
+                session_id=self.cdp_session.session_id,
+            )
+
             return {"status": "success", "x": x, "y": y}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
     @modal.method()
     async def type_text(self, text: str) -> dict:
-        """Type text."""
+        """Type text using CDP Input domain."""
         try:
-            await self.page.keyboard.type(text, delay=50)
+            for char in text:
+                await self.cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+                    params={
+                        "type": "keyDown",
+                        "text": char,
+                    },
+                    session_id=self.cdp_session.session_id,
+                )
+                await self.cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+                    params={
+                        "type": "keyUp",
+                    },
+                    session_id=self.cdp_session.session_id,
+                )
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
     @modal.method()
     async def press_key(self, key: str) -> dict:
-        """Press a key (e.g., 'Enter', 'Tab', 'Backspace')."""
+        """Press a key using CDP Input domain."""
         try:
-            await self.page.keyboard.press(key)
+            # Map common key names to CDP key codes
+            key_map = {
+                "Enter": {"key": "Enter", "code": "Enter", "keyCode": 13},
+                "Tab": {"key": "Tab", "code": "Tab", "keyCode": 9},
+                "Backspace": {"key": "Backspace", "code": "Backspace", "keyCode": 8},
+                "Escape": {"key": "Escape", "code": "Escape", "keyCode": 27},
+                "ArrowUp": {"key": "ArrowUp", "code": "ArrowUp", "keyCode": 38},
+                "ArrowDown": {"key": "ArrowDown", "code": "ArrowDown", "keyCode": 40},
+                "ArrowLeft": {"key": "ArrowLeft", "code": "ArrowLeft", "keyCode": 37},
+                "ArrowRight": {"key": "ArrowRight", "code": "ArrowRight", "keyCode": 39},
+            }
+
+            key_info = key_map.get(key, {"key": key, "code": key, "keyCode": 0})
+
+            await self.cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+                params={
+                    "type": "keyDown",
+                    "key": key_info["key"],
+                    "code": key_info["code"],
+                    "windowsVirtualKeyCode": key_info["keyCode"],
+                },
+                session_id=self.cdp_session.session_id,
+            )
+
+            await self.cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+                params={
+                    "type": "keyUp",
+                    "key": key_info["key"],
+                    "code": key_info["code"],
+                    "windowsVirtualKeyCode": key_info["keyCode"],
+                },
+                session_id=self.cdp_session.session_id,
+            )
+
             return {"status": "success", "key": key}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
     @modal.method()
     async def scroll(self, delta_x: int, delta_y: int) -> dict:
-        """Scroll the page."""
+        """Scroll the page using CDP Input domain."""
         try:
-            await self.page.mouse.wheel(delta_x, delta_y)
-            await self.page.wait_for_timeout(200)
+            await self.cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+                params={
+                    "type": "mouseWheel",
+                    "x": 640,  # Center of viewport
+                    "y": 400,
+                    "deltaX": delta_x,
+                    "deltaY": delta_y,
+                },
+                session_id=self.cdp_session.session_id,
+            )
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -1267,7 +1510,7 @@ def flask_app():
                 <button onclick="sendBrowserKey('Enter')">Enter</button>
                 <button onclick="sendBrowserKey('Tab')">Tab</button>
                 <button onclick="sendBrowserKey('Backspace')">Back</button>
-                <button onclick="refreshScreenshot()">Refresh</button>
+                <button onclick="updateBrowserState()">Refresh URL</button>
                 <span class="browser-status" id="browser-status"></span>
             </div>
         </div>
@@ -1635,11 +1878,12 @@ def flask_app():
         renderGroceryList();
 
         // =====================================================================
-        // Browser Control Functions
+        // Browser Control Functions (CDP Screencast Streaming)
         // =====================================================================
         let browserSessionId = null;
-        let screenshotInterval = null;
-        const SCREENSHOT_INTERVAL = 1500; // ms between screenshot refreshes
+        let frameEventSource = null;
+        let frameCount = 0;
+        let lastFrameTime = 0;
 
         async function openBrowser() {
             const container = document.getElementById('browser-container');
@@ -1653,8 +1897,9 @@ def flask_app():
             container.classList.add('active');
             mainContainer.classList.add('browser-active');
             loading.style.display = 'block';
+            loading.textContent = 'Starting browser...';
             screenshot.style.display = 'none';
-            statusEl.textContent = 'Starting browser...';
+            statusEl.textContent = 'Connecting...';
 
             try {
                 // Start browser session
@@ -1670,11 +1915,13 @@ def flask_app():
                 }
 
                 browserSessionId = data.session_id;
-                statusEl.textContent = 'Connected';
+                statusEl.textContent = 'Starting stream...';
 
-                // Start screenshot polling
-                await refreshScreenshot();
-                startScreenshotPolling();
+                // Start real-time frame streaming via SSE
+                startFrameStream();
+
+                // Also get initial state
+                updateBrowserState();
 
             } catch (error) {
                 console.error('Browser start error:', error);
@@ -1683,57 +1930,89 @@ def flask_app():
             }
         }
 
+        function startFrameStream() {
+            if (frameEventSource) {
+                frameEventSource.close();
+            }
+
+            const loading = document.getElementById('browser-loading');
+            const screenshot = document.getElementById('browser-screenshot');
+            const statusEl = document.getElementById('browser-status');
+
+            frameEventSource = new EventSource(`/api/browser/${browserSessionId}/stream`);
+            frameCount = 0;
+            lastFrameTime = Date.now();
+
+            frameEventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'frame' && data.data) {
+                        // Update the image with the new frame
+                        screenshot.src = 'data:image/jpeg;base64,' + data.data;
+                        screenshot.style.display = 'block';
+                        loading.style.display = 'none';
+
+                        frameCount++;
+                        const now = Date.now();
+                        const fps = Math.round(1000 / (now - lastFrameTime));
+                        lastFrameTime = now;
+
+                        statusEl.textContent = `Streaming (${frameCount} frames, ~${fps} fps)`;
+                    } else if (data.type === 'keepalive') {
+                        // Just a keepalive, ignore
+                    } else if (data.type === 'error') {
+                        console.error('Stream error:', data.message);
+                        statusEl.textContent = 'Stream error: ' + data.message;
+                    }
+                } catch (e) {
+                    console.error('Frame parse error:', e);
+                }
+            };
+
+            frameEventSource.onerror = function(error) {
+                console.error('SSE error:', error);
+                statusEl.textContent = 'Stream disconnected, reconnecting...';
+
+                // Try to reconnect after a delay
+                setTimeout(() => {
+                    if (browserSessionId && !frameEventSource) {
+                        startFrameStream();
+                    }
+                }, 2000);
+            };
+        }
+
+        function stopFrameStream() {
+            if (frameEventSource) {
+                frameEventSource.close();
+                frameEventSource = null;
+            }
+        }
+
         function closeBrowser() {
             const container = document.getElementById('browser-container');
             const mainContainer = document.querySelector('.main-container');
 
-            stopScreenshotPolling();
+            stopFrameStream();
             container.classList.remove('active');
             mainContainer.classList.remove('browser-active');
             browserSessionId = null;
         }
 
-        function startScreenshotPolling() {
-            stopScreenshotPolling();
-            screenshotInterval = setInterval(refreshScreenshot, SCREENSHOT_INTERVAL);
-        }
-
-        function stopScreenshotPolling() {
-            if (screenshotInterval) {
-                clearInterval(screenshotInterval);
-                screenshotInterval = null;
-            }
-        }
-
-        async function refreshScreenshot() {
+        async function updateBrowserState() {
             if (!browserSessionId) return;
 
-            const loading = document.getElementById('browser-loading');
-            const screenshot = document.getElementById('browser-screenshot');
             const urlDisplay = document.getElementById('browser-url');
-            const statusEl = document.getElementById('browser-status');
 
             try {
-                // Get screenshot
-                const response = await fetch(`/api/browser/${browserSessionId}/screenshot`);
-                const data = await response.json();
-
-                if (data.screenshot) {
-                    screenshot.src = 'data:image/png;base64,' + data.screenshot;
-                    screenshot.style.display = 'block';
-                    loading.style.display = 'none';
-                }
-
-                // Get state for URL
                 const stateResponse = await fetch(`/api/browser/${browserSessionId}/state`);
                 const stateData = await stateResponse.json();
                 if (stateData.url) {
                     urlDisplay.textContent = stateData.url;
                 }
-
             } catch (error) {
-                console.error('Screenshot error:', error);
-                statusEl.textContent = 'Error refreshing';
+                console.error('State error:', error);
             }
         }
 
@@ -1761,9 +2040,9 @@ def flask_app():
 
                 const data = await response.json();
                 if (data.status === 'success') {
-                    statusEl.textContent = 'Clicked';
-                    // Refresh screenshot after click
-                    setTimeout(refreshScreenshot, 500);
+                    statusEl.textContent = 'Clicked - waiting for update...';
+                    // Update state after click
+                    setTimeout(updateBrowserState, 500);
                 } else {
                     statusEl.textContent = 'Click failed';
                 }
@@ -1804,7 +2083,7 @@ def flask_app():
 
                 const data = await response.json();
                 statusEl.textContent = data.status === 'success' ? 'Typed' : 'Type failed';
-                setTimeout(refreshScreenshot, 300);
+                // Frame stream will show update automatically
             } catch (error) {
                 console.error('Type error:', error);
                 statusEl.textContent = 'Type error';
@@ -1826,7 +2105,7 @@ def flask_app():
 
                 const data = await response.json();
                 statusEl.textContent = data.status === 'success' ? `Pressed ${key}` : 'Key failed';
-                setTimeout(refreshScreenshot, 500);
+                // Frame stream will show update automatically
             } catch (error) {
                 console.error('Key error:', error);
                 statusEl.textContent = 'Key error';
@@ -1850,7 +2129,7 @@ def flask_app():
 
                 const data = await response.json();
                 statusEl.textContent = data.status === 'success' ? 'Scrolled' : 'Scroll failed';
-                setTimeout(refreshScreenshot, 300);
+                // Frame stream will show update automatically
             } catch (error) {
                 console.error('Scroll error:', error);
                 statusEl.textContent = 'Scroll error';
@@ -1980,8 +2259,6 @@ def flask_app():
     @flask_app.route("/api/browser/start", methods=["POST"])
     def browser_start():
         """Start a new browser session and navigate to cart."""
-        import asyncio
-
         data = request.json or {}
         session_id = data.get("session_id", str(uuid.uuid4())[:8])
         url = data.get("url", "https://www.realcanadiansuperstore.ca/cart")
@@ -1997,16 +2274,58 @@ def flask_app():
             # Navigate to the specified URL
             result = browser.navigate.remote(url)
 
+            # Start streaming
+            stream_result = browser.start_streaming.remote()
+
             return jsonify({
                 "status": "success",
                 "session_id": session_id,
                 "navigate_result": result,
+                "stream_result": stream_result,
             })
         except Exception as e:
             import traceback
             print(f"[Browser] Start error: {e}")
             print(f"[Browser] Traceback: {traceback.format_exc()}")
             return jsonify({"status": "error", "message": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/stream")
+    def browser_stream(session_id):
+        """SSE endpoint for real-time screencast frame streaming."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        def generate():
+            try:
+                # Stream frames from the Modal function
+                for frame_json in browser.stream_frames.remote_gen():
+                    yield f"data: {frame_json}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
+    @flask_app.route("/api/browser/<session_id>/frame")
+    def browser_frame(session_id):
+        """Get a single screencast frame."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        try:
+            result = browser.get_frame.remote()
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     @flask_app.route("/api/browser/<session_id>/screenshot")
     def browser_screenshot(session_id):
