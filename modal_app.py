@@ -23,6 +23,7 @@ import modal
 # =============================================================================
 
 app = modal.App("superstore-agent")
+MODAL_APP_NAME = "superstore-agent"
 
 # Persistent volume for storing session cookies
 session_volume = modal.Volume.from_name("superstore-session", create_if_missing=True)
@@ -706,6 +707,158 @@ def add_item_remote_streaming(item: str, index: int):
 
 
 # =============================================================================
+# Browser Session for User Control
+# =============================================================================
+
+# Store for active browser sessions
+browser_session_dict = modal.Dict.from_name("superstore-browser-sessions", create_if_missing=True)
+
+
+@app.cls(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("groq-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
+    ],
+    volumes={"/session": session_volume},
+    timeout=1800,  # 30 minutes for user interaction
+    env={
+        "TIMEOUT_BrowserStartEvent": "120",
+        "TIMEOUT_BrowserLaunchEvent": "120",
+        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "IN_DOCKER": "True",
+    },
+    cpu=1,
+    memory=4096,
+    allow_concurrent_inputs=100,
+)
+class BrowserSession:
+    """Interactive browser session that allows user control via screenshot streaming and input events."""
+
+    def __init__(self):
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.session_id = None
+
+    @modal.enter()
+    async def setup(self):
+        """Initialize browser on container start."""
+        import uuid
+        from playwright.async_api import async_playwright
+
+        self.session_id = str(uuid.uuid4())[:8]
+        print(f"[BrowserSession {self.session_id}] Initializing...")
+
+        self.playwright = await async_playwright().start()
+
+        # Get proxy config
+        proxy_config = get_proxy_config()
+        proxy_settings = None
+        if proxy_config:
+            proxy_settings = {
+                "server": proxy_config["server"],
+                "username": proxy_config["username"],
+                "password": proxy_config["password"],
+            }
+
+        # Launch browser with stealth args
+        self.browser = await self.playwright.chromium.launch_persistent_context(
+            user_data_dir="/session/profile",
+            headless=True,
+            viewport={"width": 1280, "height": 800},
+            args=STEALTH_ARGS,
+            proxy=proxy_settings,
+        )
+
+        # Get or create page
+        if self.browser.pages:
+            self.page = self.browser.pages[0]
+        else:
+            self.page = await self.browser.new_page()
+
+        print(f"[BrowserSession {self.session_id}] Browser ready")
+
+    @modal.exit()
+    async def cleanup(self):
+        """Clean up browser on container shutdown."""
+        if self.browser:
+            await self.browser.close()
+        if hasattr(self, 'playwright') and self.playwright:
+            await self.playwright.stop()
+        print(f"[BrowserSession {self.session_id}] Cleaned up")
+
+    @modal.method()
+    async def navigate(self, url: str) -> dict:
+        """Navigate to a URL."""
+        try:
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            return {"status": "success", "url": self.page.url}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @modal.method()
+    async def get_screenshot(self) -> bytes:
+        """Get current page screenshot as PNG bytes."""
+        try:
+            return await self.page.screenshot(type="png")
+        except Exception as e:
+            print(f"[BrowserSession] Screenshot error: {e}")
+            return b""
+
+    @modal.method()
+    async def get_state(self) -> dict:
+        """Get current browser state."""
+        try:
+            return {
+                "session_id": self.session_id,
+                "url": self.page.url,
+                "title": await self.page.title(),
+            }
+        except Exception as e:
+            return {"session_id": self.session_id, "error": str(e)}
+
+    @modal.method()
+    async def click(self, x: int, y: int) -> dict:
+        """Click at coordinates."""
+        try:
+            await self.page.mouse.click(x, y)
+            await self.page.wait_for_timeout(500)  # Brief wait for page reaction
+            return {"status": "success", "x": x, "y": y}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @modal.method()
+    async def type_text(self, text: str) -> dict:
+        """Type text."""
+        try:
+            await self.page.keyboard.type(text, delay=50)
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @modal.method()
+    async def press_key(self, key: str) -> dict:
+        """Press a key (e.g., 'Enter', 'Tab', 'Backspace')."""
+        try:
+            await self.page.keyboard.press(key)
+            return {"status": "success", "key": key}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @modal.method()
+    async def scroll(self, delta_x: int, delta_y: int) -> dict:
+        """Scroll the page."""
+        try:
+            await self.page.mouse.wheel(delta_x, delta_y)
+            await self.page.wait_for_timeout(200)
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
 # Chat UI Flask App
 # =============================================================================
 
@@ -936,6 +1089,127 @@ def flask_app():
             .grocery-list { max-height: calc(70vh - 140px); }
         }
         @media (min-width: 769px) { .sidebar-toggle-icon { display: none; } }
+        /* Browser View Styles */
+        .browser-container {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            background: #0a0c10;
+            border-left: 1px solid rgba(255,255,255,0.06);
+        }
+        .browser-container.active { display: flex; }
+        .browser-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .browser-header h2 {
+            font-size: 0.7rem;
+            font-weight: 400;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.4);
+        }
+        .browser-url {
+            flex: 1;
+            margin: 0 12px;
+            padding: 6px 10px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
+            font-size: 0.7rem;
+            color: rgba(255,255,255,0.5);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .browser-close {
+            background: none;
+            border: 1px solid rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.4);
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.7rem;
+        }
+        .browser-close:hover { border-color: rgba(255,255,255,0.3); color: rgba(255,255,255,0.8); }
+        .browser-viewport {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+        .browser-viewport img {
+            max-width: 100%;
+            max-height: 100%;
+            cursor: crosshair;
+        }
+        .browser-loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255,255,255,0.4);
+            font-size: 0.8rem;
+        }
+        .browser-toolbar {
+            padding: 10px 16px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .browser-toolbar input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-family: inherit;
+            background: rgba(255,255,255,0.03);
+            color: rgba(255,255,255,0.8);
+            outline: none;
+        }
+        .browser-toolbar input:focus { border-color: rgba(255,255,255,0.2); }
+        .browser-toolbar button {
+            padding: 8px 14px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.5);
+            font-family: inherit;
+        }
+        .browser-toolbar button:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
+        .browser-status {
+            font-size: 0.7rem;
+            color: rgba(255,255,255,0.3);
+        }
+        .open-browser-btn {
+            margin-top: 10px;
+            padding: 11px;
+            background: rgba(100,200,255,0.1);
+            color: rgba(100,200,255,0.9);
+            border: 1px solid rgba(100,200,255,0.2);
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-family: inherit;
+            cursor: pointer;
+            width: 100%;
+        }
+        .open-browser-btn:hover { background: rgba(100,200,255,0.15); }
+        .main-container.browser-active .sidebar { display: none; }
+        .main-container.browser-active .chat-container { max-width: 400px; }
+        @media (max-width: 768px) {
+            .main-container.browser-active .chat-container { max-width: 100%; }
+            .browser-container { position: fixed; top: 53px; left: 0; right: 0; bottom: 0; z-index: 200; }
+        }
     </style>
 </head>
 <body>
@@ -975,6 +1249,26 @@ def flask_app():
                     <button class="clear-btn" onclick="clearList()">Clear</button>
                     <button class="add-all-btn" id="add-all-btn" onclick="addAllToCart()" disabled>Add to Cart</button>
                 </div>
+                <button class="open-browser-btn" id="open-browser-btn" onclick="openBrowser()">Open Browser</button>
+            </div>
+        </div>
+        <div class="browser-container" id="browser-container">
+            <div class="browser-header">
+                <h2>Browser Control</h2>
+                <div class="browser-url" id="browser-url">Loading...</div>
+                <button class="browser-close" onclick="closeBrowser()">Close</button>
+            </div>
+            <div class="browser-viewport" id="browser-viewport">
+                <div class="browser-loading" id="browser-loading">Starting browser...</div>
+                <img id="browser-screenshot" style="display: none;" onclick="handleBrowserClick(event)" />
+            </div>
+            <div class="browser-toolbar">
+                <input type="text" id="browser-input" placeholder="Type here and press Enter..." onkeydown="handleBrowserKeydown(event)" />
+                <button onclick="sendBrowserKey('Enter')">Enter</button>
+                <button onclick="sendBrowserKey('Tab')">Tab</button>
+                <button onclick="sendBrowserKey('Backspace')">Back</button>
+                <button onclick="refreshScreenshot()">Refresh</button>
+                <span class="browser-status" id="browser-status"></span>
             </div>
         </div>
     </div>
@@ -1081,7 +1375,16 @@ def flask_app():
                     itemsProcessed.push({ item: event.item, status: event.status, icon: icon, steps: event.steps || 0 });
                     updateProgressDisplay(progressDiv, itemsProcessed);
                     break;
-                case 'complete': progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Complete')}</span>`; break;
+                case 'complete':
+                    progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Complete')}</span>`;
+                    // Auto-open browser when items are added
+                    if (event.success_count > 0) {
+                        setTimeout(() => {
+                            addMessage('Items added! Opening browser for you to review and checkout...', 'assistant');
+                            openBrowser();
+                        }, 1000);
+                    }
+                    break;
             }
             document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
         }
@@ -1330,6 +1633,229 @@ def flask_app():
 
         document.getElementById('message-input').focus();
         renderGroceryList();
+
+        // =====================================================================
+        // Browser Control Functions
+        // =====================================================================
+        let browserSessionId = null;
+        let screenshotInterval = null;
+        const SCREENSHOT_INTERVAL = 1500; // ms between screenshot refreshes
+
+        async function openBrowser() {
+            const container = document.getElementById('browser-container');
+            const mainContainer = document.querySelector('.main-container');
+            const loading = document.getElementById('browser-loading');
+            const screenshot = document.getElementById('browser-screenshot');
+            const urlDisplay = document.getElementById('browser-url');
+            const statusEl = document.getElementById('browser-status');
+
+            // Show browser panel
+            container.classList.add('active');
+            mainContainer.classList.add('browser-active');
+            loading.style.display = 'block';
+            screenshot.style.display = 'none';
+            statusEl.textContent = 'Starting browser...';
+
+            try {
+                // Start browser session
+                const response = await fetch('/api/browser/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: 'https://www.realcanadiansuperstore.ca/cart' })
+                });
+
+                const data = await response.json();
+                if (data.status !== 'success') {
+                    throw new Error(data.message || 'Failed to start browser');
+                }
+
+                browserSessionId = data.session_id;
+                statusEl.textContent = 'Connected';
+
+                // Start screenshot polling
+                await refreshScreenshot();
+                startScreenshotPolling();
+
+            } catch (error) {
+                console.error('Browser start error:', error);
+                statusEl.textContent = 'Error: ' + error.message;
+                loading.textContent = 'Failed to start browser: ' + error.message;
+            }
+        }
+
+        function closeBrowser() {
+            const container = document.getElementById('browser-container');
+            const mainContainer = document.querySelector('.main-container');
+
+            stopScreenshotPolling();
+            container.classList.remove('active');
+            mainContainer.classList.remove('browser-active');
+            browserSessionId = null;
+        }
+
+        function startScreenshotPolling() {
+            stopScreenshotPolling();
+            screenshotInterval = setInterval(refreshScreenshot, SCREENSHOT_INTERVAL);
+        }
+
+        function stopScreenshotPolling() {
+            if (screenshotInterval) {
+                clearInterval(screenshotInterval);
+                screenshotInterval = null;
+            }
+        }
+
+        async function refreshScreenshot() {
+            if (!browserSessionId) return;
+
+            const loading = document.getElementById('browser-loading');
+            const screenshot = document.getElementById('browser-screenshot');
+            const urlDisplay = document.getElementById('browser-url');
+            const statusEl = document.getElementById('browser-status');
+
+            try {
+                // Get screenshot
+                const response = await fetch(`/api/browser/${browserSessionId}/screenshot`);
+                const data = await response.json();
+
+                if (data.screenshot) {
+                    screenshot.src = 'data:image/png;base64,' + data.screenshot;
+                    screenshot.style.display = 'block';
+                    loading.style.display = 'none';
+                }
+
+                // Get state for URL
+                const stateResponse = await fetch(`/api/browser/${browserSessionId}/state`);
+                const stateData = await stateResponse.json();
+                if (stateData.url) {
+                    urlDisplay.textContent = stateData.url;
+                }
+
+            } catch (error) {
+                console.error('Screenshot error:', error);
+                statusEl.textContent = 'Error refreshing';
+            }
+        }
+
+        async function handleBrowserClick(event) {
+            if (!browserSessionId) return;
+
+            const img = event.target;
+            const rect = img.getBoundingClientRect();
+
+            // Calculate click position relative to the image
+            const scaleX = 1280 / img.clientWidth;  // Browser viewport width
+            const scaleY = 800 / img.clientHeight;  // Browser viewport height
+            const x = Math.round((event.clientX - rect.left) * scaleX);
+            const y = Math.round((event.clientY - rect.top) * scaleY);
+
+            const statusEl = document.getElementById('browser-status');
+            statusEl.textContent = `Clicking (${x}, ${y})...`;
+
+            try {
+                const response = await fetch(`/api/browser/${browserSessionId}/click`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ x, y })
+                });
+
+                const data = await response.json();
+                if (data.status === 'success') {
+                    statusEl.textContent = 'Clicked';
+                    // Refresh screenshot after click
+                    setTimeout(refreshScreenshot, 500);
+                } else {
+                    statusEl.textContent = 'Click failed';
+                }
+            } catch (error) {
+                console.error('Click error:', error);
+                statusEl.textContent = 'Click error';
+            }
+        }
+
+        async function handleBrowserKeydown(event) {
+            if (!browserSessionId) return;
+
+            const input = document.getElementById('browser-input');
+
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                const text = input.value;
+                if (text) {
+                    await sendBrowserText(text);
+                    input.value = '';
+                }
+                await sendBrowserKey('Enter');
+            }
+        }
+
+        async function sendBrowserText(text) {
+            if (!browserSessionId || !text) return;
+
+            const statusEl = document.getElementById('browser-status');
+            statusEl.textContent = 'Typing...';
+
+            try {
+                const response = await fetch(`/api/browser/${browserSessionId}/type`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+
+                const data = await response.json();
+                statusEl.textContent = data.status === 'success' ? 'Typed' : 'Type failed';
+                setTimeout(refreshScreenshot, 300);
+            } catch (error) {
+                console.error('Type error:', error);
+                statusEl.textContent = 'Type error';
+            }
+        }
+
+        async function sendBrowserKey(key) {
+            if (!browserSessionId) return;
+
+            const statusEl = document.getElementById('browser-status');
+            statusEl.textContent = `Pressing ${key}...`;
+
+            try {
+                const response = await fetch(`/api/browser/${browserSessionId}/key`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key })
+                });
+
+                const data = await response.json();
+                statusEl.textContent = data.status === 'success' ? `Pressed ${key}` : 'Key failed';
+                setTimeout(refreshScreenshot, 500);
+            } catch (error) {
+                console.error('Key error:', error);
+                statusEl.textContent = 'Key error';
+            }
+        }
+
+        // Handle scroll on browser viewport
+        document.getElementById('browser-viewport').addEventListener('wheel', async (event) => {
+            if (!browserSessionId) return;
+            event.preventDefault();
+
+            const statusEl = document.getElementById('browser-status');
+            statusEl.textContent = 'Scrolling...';
+
+            try {
+                const response = await fetch(`/api/browser/${browserSessionId}/scroll`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deltaX: event.deltaX, deltaY: event.deltaY })
+                });
+
+                const data = await response.json();
+                statusEl.textContent = data.status === 'success' ? 'Scrolled' : 'Scroll failed';
+                setTimeout(refreshScreenshot, 300);
+            } catch (error) {
+                console.error('Scroll error:', error);
+                statusEl.textContent = 'Scroll error';
+            }
+        }, { passive: false });
     </script>
 </body>
 </html>"""
@@ -1443,5 +1969,173 @@ def flask_app():
     @flask_app.route("/health")
     def health():
         return jsonify({"status": "ok"})
+
+    # =========================================================================
+    # Browser Control API Endpoints
+    # =========================================================================
+
+    # Store browser session references
+    browser_sessions = {}
+
+    @flask_app.route("/api/browser/start", methods=["POST"])
+    def browser_start():
+        """Start a new browser session and navigate to cart."""
+        import asyncio
+
+        data = request.json or {}
+        session_id = data.get("session_id", str(uuid.uuid4())[:8])
+        url = data.get("url", "https://www.realcanadiansuperstore.ca/cart")
+
+        try:
+            # Get the BrowserSession class from Modal
+            BrowserSessionCls = modal.Cls.from_name(MODAL_APP_NAME, "BrowserSession")
+            browser = BrowserSessionCls()
+
+            # Store reference
+            browser_sessions[session_id] = browser
+
+            # Navigate to the specified URL
+            result = browser.navigate.remote(url)
+
+            return jsonify({
+                "status": "success",
+                "session_id": session_id,
+                "navigate_result": result,
+            })
+        except Exception as e:
+            import traceback
+            print(f"[Browser] Start error: {e}")
+            print(f"[Browser] Traceback: {traceback.format_exc()}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/screenshot")
+    def browser_screenshot(session_id):
+        """Get current screenshot as PNG."""
+        import base64
+
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        try:
+            screenshot_bytes = browser.get_screenshot.remote()
+            if not screenshot_bytes:
+                return jsonify({"error": "Failed to get screenshot"}), 500
+
+            # Return as base64 for easy embedding
+            b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+            return jsonify({"screenshot": b64})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/screenshot.png")
+    def browser_screenshot_png(session_id):
+        """Get current screenshot as raw PNG."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return "", 404
+
+        try:
+            screenshot_bytes = browser.get_screenshot.remote()
+            if not screenshot_bytes:
+                return "", 500
+            return Response(screenshot_bytes, mimetype="image/png")
+        except Exception as e:
+            return "", 500
+
+    @flask_app.route("/api/browser/<session_id>/state")
+    def browser_state(session_id):
+        """Get current browser state."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        try:
+            state = browser.get_state.remote()
+            return jsonify(state)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/click", methods=["POST"])
+    def browser_click(session_id):
+        """Click at coordinates."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.json
+        x = data.get("x", 0)
+        y = data.get("y", 0)
+
+        try:
+            result = browser.click.remote(int(x), int(y))
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/type", methods=["POST"])
+    def browser_type(session_id):
+        """Type text."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.json
+        text = data.get("text", "")
+
+        try:
+            result = browser.type_text.remote(text)
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/key", methods=["POST"])
+    def browser_key(session_id):
+        """Press a key."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.json
+        key = data.get("key", "Enter")
+
+        try:
+            result = browser.press_key.remote(key)
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/scroll", methods=["POST"])
+    def browser_scroll(session_id):
+        """Scroll the page."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.json
+        delta_x = data.get("deltaX", 0)
+        delta_y = data.get("deltaY", 0)
+
+        try:
+            result = browser.scroll.remote(int(delta_x), int(delta_y))
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @flask_app.route("/api/browser/<session_id>/navigate", methods=["POST"])
+    def browser_navigate(session_id):
+        """Navigate to a URL."""
+        browser = browser_sessions.get(session_id)
+        if not browser:
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.json
+        url = data.get("url", "")
+
+        try:
+            result = browser.navigate.remote(url)
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     return flask_app
