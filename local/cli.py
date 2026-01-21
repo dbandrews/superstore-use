@@ -170,7 +170,6 @@ async def login_and_save(headless: bool = True):
         user_data_dir=user_data_dir,
         headless=headless,
         use_stealth=True,
-        fast_mode=False,  # Use slower timing for more reliable login
     )
 
     try:
@@ -190,7 +189,8 @@ async def login_and_save(headless: bool = True):
             6. Then enter password: {password}
             7. Click the sign in button.
             8. After clicking to sign in, wait patiently for as long as needed for the login
-               to complete. Do not rush - the page may take several seconds to load.
+               to complete. Do not rush - the page may take thirty seconds to load.
+            If you still see a loading spinner, wait for thirty seconds again.
             9. Wait for "My Account" at top right to confirm login.
 
             Complete when logged in successfully.
@@ -275,7 +275,6 @@ def add_single_item_process(args: tuple[str, int, int, tuple[int, int], str]) ->
             position=position,
             window_size=(700, 700),
             use_stealth=False,  # Minimal args for local
-            fast_mode=True,  # Faster timing for local
         )
 
         try:
@@ -373,7 +372,6 @@ async def add_items_to_cart(items: list[str], x_offset: int = 1080):
         headless=False,
         window_size=(700, 700),
         use_stealth=False,
-        fast_mode=True,
     )
 
     return browser

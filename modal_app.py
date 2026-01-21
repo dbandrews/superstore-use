@@ -14,7 +14,6 @@ import json
 import os
 import threading
 import uuid
-from typing import Optional
 
 import modal
 
@@ -129,7 +128,13 @@ chat_image = (
 # =============================================================================
 
 
-def create_browser(shared_profile: bool = False, use_proxy: bool = True):
+def create_browser(
+    shared_profile: bool = False,
+    use_proxy: bool = True,
+    wait_between_actions: float = 1.5,
+    minimum_wait_page_load_time: float = 1.5,
+    wait_for_network_idle_page_load_time: float = 1.5,
+):
     """Create browser configured for Modal's containerized environment.
 
     Args:
@@ -137,6 +142,9 @@ def create_browser(shared_profile: bool = False, use_proxy: bool = True):
                         If False, use profile from image (for isolated containers).
         use_proxy: If True, use proxy settings from environment. Default True.
                    Set to False for login to avoid proxy IP blocking by auth servers.
+        wait_between_actions: Delay between browser actions in seconds. Default 1.5.
+        minimum_wait_page_load_time: Minimum wait for page loads in seconds. Default 1.5.
+        wait_for_network_idle_page_load_time: Wait for network idle in seconds. Default 1.5.
     """
     from browser_use import Browser
     from browser_use.browser.profile import ProxySettings
@@ -158,9 +166,9 @@ def create_browser(shared_profile: bool = False, use_proxy: bool = True):
     return Browser(
         headless=True,
         window_size={"width": 1920, "height": 1080},
-        wait_between_actions=1.5,
-        minimum_wait_page_load_time=1.5,
-        wait_for_network_idle_page_load_time=1.5,
+        wait_between_actions=wait_between_actions,
+        minimum_wait_page_load_time=minimum_wait_page_load_time,
+        wait_for_network_idle_page_load_time=wait_for_network_idle_page_load_time,
         user_data_dir=user_data_dir,
         proxy=proxy_settings,
         args=STEALTH_ARGS,
@@ -219,94 +227,12 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
         "TIMEOUT_BrowserStateRequestEvent": "120",
         "IN_DOCKER": "True",
     },
-    cpu=1,
-    memory=4096,
-)
-def login_remote() -> dict:
-    """Log in to Superstore and save session to shared volume.
-
-    This must be called before add_item_remote will work.
-    """
-    from browser_use import Agent, ChatGroq
-
-    async def _login():
-        username = os.environ.get("SUPERSTORE_USER")
-        password = os.environ.get("SUPERSTORE_PASSWORD")
-
-        if not username or not password:
-            return {"status": "failed", "message": "Missing credentials"}
-
-        print("[Login] Starting login process on Modal...")
-        print(f"[Login] Profile: /session/profile")
-
-        browser = create_browser(shared_profile=True)
-
-        try:
-            agent = Agent(
-                task=f"""
-                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
-
-                Steps:
-                1. Go to https://www.realcanadiansuperstore.ca/en
-                2. If you see "My Shop" and "let's get started by shopping your regulars",
-                   you are already logged in - call done.
-                3. Otherwise, click "Sign in" at top right.
-                4. IMPORTANT: If you see an email address ({username}) displayed on the login page
-                   (this indicates a saved login), simply click on that email to proceed.
-                   Then wait patiently for the login to complete - this may take several seconds.
-                5. If you don't see the email displayed, enter username: {username}
-                6. Then enter password: {password}
-                7. Click the sign in button.
-                8. After clicking to sign in, wait patiently for as long as needed for the login
-                   to complete. Do not rush - the page may take several seconds to load.
-                9. Wait for "My Account" at top right to confirm login.
-
-                Complete when logged in successfully.
-                """,
-                llm=ChatGroq(model=MODEL_NAME),
-                use_vision=False,
-                browser_session=browser,
-            )
-
-            await agent.run(max_steps=50)
-
-            # Commit the volume to persist session
-            session_volume.commit()
-            print("[Login] Session committed to Modal volume.")
-
-            return {"status": "success", "message": "Login successful"}
-
-        except Exception as e:
-            print(f"[Login] Error: {e}")
-            return {"status": "failed", "message": str(e)}
-        finally:
-            await browser.kill()
-
-    return asyncio.run(_login())
-
-
-@app.function(
-    image=image,
-    secrets=[
-        modal.Secret.from_name("groq-secret"),
-        modal.Secret.from_name("oxy-proxy"),
-        modal.Secret.from_name("superstore"),
-    ],
-    volumes={"/session": session_volume},
-    timeout=600,
-    env={
-        "TIMEOUT_BrowserStartEvent": "120",
-        "TIMEOUT_BrowserLaunchEvent": "120",
-        "TIMEOUT_BrowserStateRequestEvent": "120",
-        "IN_DOCKER": "True",
-    },
-    cpu=1,
+    cpu=2,
     memory=4096,
 )
 def login_remote_streaming():
     """Streaming version of login that yields progress events."""
     import queue
-    import threading
 
     from browser_use import Agent, ChatGroq
 
@@ -321,7 +247,13 @@ def login_remote_streaming():
             return {"status": "failed", "message": "Missing credentials"}
 
         print("[Login] Starting login process on Modal...")
-        browser = create_browser(shared_profile=True)
+        # Use longer delays for login to handle auth server latency
+        browser = create_browser(
+            shared_profile=True,
+            wait_between_actions=5.0,
+            minimum_wait_page_load_time=5.0,
+            wait_for_network_idle_page_load_time=5.0,
+        )
         step_count = 0
 
         async def on_step_end(agent):
@@ -338,12 +270,14 @@ def login_remote_streaming():
                 thinking = latest_output.thinking
                 next_goal = latest_output.next_goal
 
-            step_events.put({
-                "type": "step",
-                "step": step_count,
-                "thinking": thinking,
-                "next_goal": next_goal,
-            })
+            step_events.put(
+                {
+                    "type": "step",
+                    "step": step_count,
+                    "thinking": thinking,
+                    "next_goal": next_goal,
+                }
+            )
 
         try:
             agent = Agent(
@@ -352,8 +286,7 @@ def login_remote_streaming():
 
                 Steps:
                 1. Go to https://www.realcanadiansuperstore.ca/en
-                2. If you see "My Shop" and "let's get started by shopping your regulars",
-                   you are already logged in - call done.
+                2. Check if "Sign In" appears anywhere on the page. If it doesn't, stop and return success.
                 3. Otherwise, click "Sign in" at top right.
                 4. IMPORTANT: If you see an email address ({username}) displayed on the login page
                    (this indicates a saved login), simply click on that email to proceed.
@@ -411,21 +344,25 @@ def login_remote_streaming():
             break
 
     if result_holder["error"]:
-        yield json.dumps({
-            "type": "complete",
-            "status": "failed",
-            "message": result_holder["error"],
-            "steps": 0,
-        })
+        yield json.dumps(
+            {
+                "type": "complete",
+                "status": "failed",
+                "message": result_holder["error"],
+                "steps": 0,
+            }
+        )
     elif result_holder["result"]:
         yield json.dumps({"type": "complete", **result_holder["result"]})
     else:
-        yield json.dumps({
-            "type": "complete",
-            "status": "failed",
-            "message": "Unknown error",
-            "steps": 0,
-        })
+        yield json.dumps(
+            {
+                "type": "complete",
+                "status": "failed",
+                "message": "Unknown error",
+                "steps": 0,
+            }
+        )
 
 
 @app.function(
@@ -443,112 +380,12 @@ def login_remote_streaming():
         "TIMEOUT_BrowserStateRequestEvent": "120",
         "IN_DOCKER": "True",
     },
-    cpu=1,
-    memory=4096,
-)
-def add_item_remote(item: str, index: int) -> dict:
-    """Add a single item to cart in a separate Modal container (parallelizable).
-
-    Uses shared profile on volume (created by login_remote).
-    """
-    from browser_use import Agent, ChatGroq
-
-    async def _add_item():
-        print(f"[Container {index}] Starting to add item: {item}")
-        browser = create_browser(shared_profile=True)
-
-        try:
-            agent = Agent(
-                task=f"""
-                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
-
-                Go to https://www.realcanadiansuperstore.ca/en.
-
-                IMPORTANT: Before starting, check the page contains "My Shop" and "let's get started by shopping your regulars".
-                If you see these, you are already logged in.
-
-                UNDERSTANDING THE ITEM REQUEST:
-                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
-                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
-                - Note the quantity requested (e.g., 6, 2 liters, 500g)
-
-                Steps:
-                1. Use the search bar to search for the PRODUCT NAME (not the full quantity string)
-                   - For "6 apples", search for "apples"
-                   - For "2 liters milk", search for "milk"
-                   - For "500g chicken breast", search for "chicken breast"
-                2. From the search results, select the most relevant item that matches the quantity/size if possible
-                   - If looking for "2 liters milk", prefer 2L milk containers
-                   - If looking for "500g chicken", prefer ~500g packages
-                3. If a specific quantity is requested (like "6 apples"):
-                   - Look for a quantity selector/input field on the product
-                   - Adjust the quantity before adding to cart
-                   - If no quantity selector, you may need to click "Add to Cart" multiple times
-                4. Click "Add to Cart" or similar button
-                5. Wait for confirmation that item was added (look for cart update or confirmation message)
-
-                Complete when you see confirmation the item was added to cart with the correct quantity.
-
-                NOTE: If you see a login page or are not logged in, report this as an error.
-                """,
-                llm=ChatGroq(model=MODEL_NAME),
-                use_vision=False,
-                browser_session=browser,
-            )
-
-            await agent.run(max_steps=30)
-
-            success, evidence = detect_success_from_history(agent)
-
-            if success:
-                print(f"[Container {index}] SUCCESS: {evidence}")
-                return {
-                    "item": item,
-                    "index": index,
-                    "status": "success",
-                    "message": f"Added {item}",
-                    "evidence": evidence,
-                }
-            else:
-                print(f"[Container {index}] No success indicator found")
-                return {
-                    "item": item,
-                    "index": index,
-                    "status": "uncertain",
-                    "message": f"Completed but could not confirm {item} was added",
-                }
-
-        except Exception as e:
-            print(f"[Container {index}] ERROR: {e}")
-            return {"item": item, "index": index, "status": "failed", "message": str(e)}
-        finally:
-            await browser.kill()
-
-    return asyncio.run(_add_item())
-
-
-@app.function(
-    image=image,
-    secrets=[
-        modal.Secret.from_name("groq-secret"),
-        modal.Secret.from_name("oxy-proxy"),
-        modal.Secret.from_name("superstore"),
-    ],
-    volumes={"/session": session_volume},
-    timeout=600,
-    env={
-        "TIMEOUT_BrowserStartEvent": "120",
-        "TIMEOUT_BrowserLaunchEvent": "120",
-        "TIMEOUT_BrowserStateRequestEvent": "120",
-        "IN_DOCKER": "True",
-    },
-    cpu=1,
+    cpu=2,
     memory=4096,
 )
 def add_item_remote_streaming(item: str, index: int):
     """Generator version that yields JSON progress events in real-time."""
     import queue
-    import threading
 
     from browser_use import Agent, ChatGroq
 
@@ -557,7 +394,12 @@ def add_item_remote_streaming(item: str, index: int):
 
     async def _add_item():
         print(f"[Container {index}] Starting to add item: {item}")
-        browser = create_browser(shared_profile=True)
+        browser = create_browser(
+            shared_profile=True,
+            wait_between_actions=1,
+            minimum_wait_page_load_time=1,
+            wait_for_network_idle_page_load_time=2.5,
+        )
         step_count = 0
 
         async def on_step_end(agent):
@@ -581,16 +423,18 @@ def add_item_remote_streaming(item: str, index: int):
                 if latest_output.action:
                     action_str = str(latest_output.action[0])[:80]
 
-            step_events.put({
-                "type": "step",
-                "item": item,
-                "index": index,
-                "step": step_count,
-                "action": action_str,
-                "thinking": thinking,
-                "evaluation": evaluation,
-                "next_goal": next_goal,
-            })
+            step_events.put(
+                {
+                    "type": "step",
+                    "item": item,
+                    "index": index,
+                    "step": step_count,
+                    "action": action_str,
+                    "thinking": thinking,
+                    "evaluation": evaluation,
+                    "next_goal": next_goal,
+                }
+            )
 
         try:
             agent = Agent(
@@ -615,10 +459,9 @@ def add_item_remote_streaming(item: str, index: int):
                    - Look for a quantity selector/input field on the product
                    - Adjust the quantity before adding to cart
                    - If no quantity selector, you may need to click "Add to Cart" multiple times
-                4. Click "Add to Cart" or similar button
-                5. Wait for confirmation that item was added
+                4. Click "Add to Cart", ensuring you have the correct quantity.
 
-                Complete when you see confirmation the item was added to cart with the correct quantity.
+                Return success immediately when you've added the item, don't confirm the item was added.
                 """,
                 llm=ChatGroq(model=MODEL_NAME),
                 use_vision=False,
@@ -684,25 +527,29 @@ def add_item_remote_streaming(item: str, index: int):
             break
 
     if result_holder["error"]:
-        yield json.dumps({
-            "type": "complete",
-            "item": item,
-            "index": index,
-            "status": "failed",
-            "message": result_holder["error"],
-            "steps": 0,
-        })
+        yield json.dumps(
+            {
+                "type": "complete",
+                "item": item,
+                "index": index,
+                "status": "failed",
+                "message": result_holder["error"],
+                "steps": 0,
+            }
+        )
     elif result_holder["result"]:
         yield json.dumps({"type": "complete", **result_holder["result"]})
     else:
-        yield json.dumps({
-            "type": "complete",
-            "item": item,
-            "index": index,
-            "status": "failed",
-            "message": "Unknown error",
-            "steps": 0,
-        })
+        yield json.dumps(
+            {
+                "type": "complete",
+                "item": item,
+                "index": index,
+                "status": "failed",
+                "message": "Unknown error",
+                "steps": 0,
+            }
+        )
 
 
 # =============================================================================
@@ -769,17 +616,15 @@ def flask_app():
                 if event.get("item") in job["items_in_progress"]:
                     job["items_in_progress"][event["item"]] = {
                         "step": event.get("step", 0),
-                        "action": event.get("action", "...")
+                        "action": event.get("action", "..."),
                     }
             elif event_type == "item_complete":
                 item_name = event.get("item")
                 if item_name in job["items_in_progress"]:
                     del job["items_in_progress"][item_name]
-                job["items_processed"].append({
-                    "item": item_name,
-                    "status": event.get("status", "unknown"),
-                    "steps": event.get("steps", 0)
-                })
+                job["items_processed"].append(
+                    {"item": item_name, "status": event.get("status", "unknown"), "steps": event.get("steps", 0)}
+                )
             elif event_type == "complete":
                 job["status"] = "completed"
                 job["success_count"] = event.get("success_count", 0)
@@ -1343,7 +1188,6 @@ def flask_app():
         """Handle chat messages with SSE streaming for progress updates."""
         import asyncio
         import queue
-        import threading
 
         data = request.json
         thread_id = data.get("thread_id")
@@ -1397,6 +1241,7 @@ def flask_app():
 
             except Exception as e:
                 import traceback
+
                 print(f"[ChatStream] Error: {e}")
                 print(f"[ChatStream] Traceback: {traceback.format_exc()}")
                 event_queue.put({"type": "error", "message": str(e)})

@@ -62,7 +62,6 @@ def create_browser(
     window_size: tuple[int, int] = (1920, 1080),
     use_proxy: bool = False,
     use_stealth: bool = True,
-    fast_mode: bool = False,
 ):
     """Create browser configured for Superstore automation.
 
@@ -75,7 +74,6 @@ def create_browser(
         window_size: Window dimensions as (width, height). Default (1920, 1080).
         use_proxy: Whether to use proxy settings from environment. Default False.
         use_stealth: Whether to use stealth arguments for bot detection avoidance.
-        fast_mode: If True, use faster timing for local development.
 
     Returns:
         Browser instance configured for Superstore automation.
@@ -95,14 +93,9 @@ def create_browser(
         args.append("--disable-features=LockProfileCookieDatabase")
 
     # Timing settings: faster for local, slower for Modal
-    if fast_mode:
-        wait_between_actions = 2.5
-        minimum_wait_page_load_time = 2.5
-        wait_for_network_idle = 2.5
-    else:
-        wait_between_actions = 2.5
-        minimum_wait_page_load_time = 2.5
-        wait_for_network_idle = 2.5
+    wait_between_actions = 4
+    minimum_wait_page_load_time = 2.5
+    wait_for_network_idle = 2.5
 
     # Build browser kwargs
     browser_kwargs = {
