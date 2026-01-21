@@ -13,7 +13,7 @@ uv sync
 uvx playwright install chromium --with-deps --no-shell
 ```
 
-Get OpenAI api key - add to .env as `OPENAI_API_KEY`. Add `SUPERSTORE_USER`, `SUPERSTORE_PASSWORD` to .env as well for login.
+Get Groq API key - add to .env as `GROQ_API_KEY`. Add `SUPERSTORE_USER`, `SUPERSTORE_PASSWORD` to .env as well for login.
 
 
 # Run

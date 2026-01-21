@@ -62,7 +62,7 @@ superstore-use/
 
 - **Python 3.11** with `uv` package manager
 - **browser-use** - AI browser automation framework
-- **OpenAI GPT-4.1** - LLM for agent decision-making
+- **Groq** - LLM provider (Llama 3.3 70B for chat, GPT-OSS-120B for browser)
 - **LangGraph** - Chat agent framework
 - **Flask** - Web interface (Modal deployment)
 - **Modal** - Serverless cloud deployment
@@ -72,7 +72,7 @@ superstore-use/
 
 Required in `.env`:
 ```
-OPENAI_API_KEY=...
+GROQ_API_KEY=...
 SUPERSTORE_USER=...
 SUPERSTORE_PASSWORD=...
 ```

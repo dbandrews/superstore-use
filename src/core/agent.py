@@ -13,7 +13,7 @@ from typing import Generator, Literal
 import modal
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import START, MessagesState, StateGraph
@@ -409,7 +409,7 @@ def create_chat_agent():
     config = load_config()
 
     # Create the LLM with streaming-aware tools bound
-    llm = ChatOpenAI(
+    llm = ChatGroq(
         model=config.llm.chat_model,
         temperature=config.llm.chat_temperature,
     )

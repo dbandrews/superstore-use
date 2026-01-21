@@ -107,7 +107,7 @@ chat_image = (
     .pip_install(
         "flask",
         "langchain-core",
-        "langchain-openai",
+        "langchain-groq",
         "langgraph",
         "pydantic",
         "python-dotenv",
@@ -536,7 +536,7 @@ def add_item_remote_streaming(item: str, index: int):
 
 @app.function(
     image=chat_image,
-    secrets=[modal.Secret.from_name("openai-secret")],
+    secrets=[modal.Secret.from_name("groq-secret")],
     timeout=600,
     cpu=1,
     memory=2048,
