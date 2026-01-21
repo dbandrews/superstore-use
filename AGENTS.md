@@ -10,15 +10,24 @@ This is an AI-powered grocery shopping agent for **Real Canadian Superstore**. I
 
 ```
 superstore-use/
-    core/                    # Shared utilities
+    src/                     # Source package
         __init__.py
-        browser.py           # Browser config: STEALTH_ARGS, create_browser()
-        success.py           # Success detection: detect_success_from_history()
-        agent.py             # LangGraph chat agent + Modal tools
-    local/                   # Local CLI module
-        __init__.py
-        cli.py               # Entry point: uv run -m local.cli
-    modal_app.py             # Single unified Modal deployment
+        core/                # Shared utilities
+            __init__.py
+            browser.py       # Browser config: STEALTH_ARGS, create_browser()
+            config.py        # Configuration loading from config.toml
+            success.py       # Success detection: detect_success_from_history()
+            agent.py         # LangGraph chat agent + Modal tools
+        local/               # Local CLI module
+            __init__.py
+            cli.py           # Entry point: uv run -m src.local.cli
+        prompts/             # Prompt templates (markdown)
+            login.md
+            add_item.md
+            checkout.md
+            chat_system.md
+    modal_app.py             # Single unified Modal deployment (stays in root)
+    config.toml              # Configuration file
     agent_docs/              # Documentation for Modal deployment
     superstore-profile/      # Persisted browser state (cookies, login session)
 ```
@@ -27,13 +36,13 @@ superstore-use/
 
 | Command | Purpose |
 |---------|---------|
-| `uv run -m local.cli login` | Local login to save browser profile |
-| `uv run -m local.cli shop` | Local shopping with parallel browser windows |
+| `uv run -m src.local.cli login` | Local login to save browser profile |
+| `uv run -m src.local.cli shop` | Local shopping with parallel browser windows |
 | `modal deploy modal_app.py` | Deploy unified Modal app (chat UI + automation) |
 
 ### Core Flow
 
-1. **Login** - Run `uv run -m local.cli login` (local) or use chat UI (Modal)
+1. **Login** - Run `uv run -m src.local.cli login` (local) or use chat UI (Modal)
 2. **Add Items** - Agent searches for items and adds them to cart (parallel processing)
 3. **Checkout** - Agent navigates through checkout steps, stops at final confirmation
 4. **Place Order** - Requires explicit user confirmation before submitting
@@ -42,10 +51,11 @@ superstore-use/
 
 | Module | Purpose |
 |--------|---------|
-| `core/browser.py` | Browser creation, stealth args, profile detection |
-| `core/success.py` | Success indicators and detection from agent history |
-| `core/agent.py` | LangGraph chat agent with Modal tool wrappers |
-| `local/cli.py` | Local CLI with login and parallel shopping commands |
+| `src/core/browser.py` | Browser creation, stealth args, profile detection |
+| `src/core/config.py` | Configuration loading from config.toml |
+| `src/core/success.py` | Success indicators and detection from agent history |
+| `src/core/agent.py` | LangGraph chat agent with Modal tool wrappers |
+| `src/local/cli.py` | Local CLI with login and parallel shopping commands |
 | `modal_app.py` | Modal functions (login, add_item) + Chat UI Flask app |
 
 ## Tech Stack
@@ -92,14 +102,14 @@ uvx playwright install chromium --with-deps --no-shell
 
 **First-time login (local):**
 ```bash
-uv run -m local.cli login          # Headless
-uv run -m local.cli login --headed # Visible browser for debugging
+uv run -m src.local.cli login          # Headless
+uv run -m src.local.cli login --headed # Visible browser for debugging
 ```
 
 **Run locally (CLI with parallel browsers):**
 ```bash
-uv run -m local.cli shop
-uv run -m local.cli shop --monitor-offset 0  # Adjust for your monitor setup
+uv run -m src.local.cli shop
+uv run -m src.local.cli shop --monitor-offset 0  # Adjust for your monitor setup
 ```
 
 ## Modal Deployment

@@ -3,8 +3,8 @@
 Provides local-only commands for login and shopping with parallel browser windows.
 
 Usage:
-    uv run -m local.cli login [--headed]     # One-time login to persist profile
-    uv run -m local.cli shop [--monitor-offset N]  # Interactive shopping
+    uv run -m src.local.cli login [--headed]     # One-time login to persist profile
+    uv run -m src.local.cli shop [--monitor-offset N]  # Interactive shopping
 """
 
 import argparse
@@ -17,23 +17,17 @@ from pathlib import Path
 from browser_use import Agent, ChatGroq
 from dotenv import load_dotenv
 
-from core.browser import create_browser, get_profile_dir
+from src.core.browser import create_browser, get_profile_dir
+from src.core.config import load_config
 
-# Chrome lock files that should be removed when copying profiles
-CHROME_LOCK_FILES = [
-    "SingletonLock",
-    "SingletonCookie",
-    "SingletonSocket",
-    "lockfile",
-    "parent.lock",
-]
-
-MODEL_NAME = "openai/gpt-oss-120b"
+# Load configuration
+_config = load_config()
 
 
 def _ignore_chrome_lock_files(directory: str, files: list[str]) -> list[str]:
     """Ignore function for shutil.copytree to skip Chrome lock files."""
-    return [f for f in files if f in CHROME_LOCK_FILES]
+    lock_files = _config.local_cli.chrome_lock_files
+    return [f for f in files if f in lock_files]
 
 
 def _clean_chrome_lock_files(profile_dir: str) -> None:
@@ -43,7 +37,7 @@ def _clean_chrome_lock_files(profile_dir: str) -> None:
     copying to Modal deployment.
     """
     profile_path = Path(profile_dir)
-    for lock_file in CHROME_LOCK_FILES:
+    for lock_file in _config.local_cli.chrome_lock_files:
         lock_path = profile_path / lock_file
         if lock_path.exists() or lock_path.is_symlink():
             try:
@@ -87,25 +81,37 @@ load_dotenv()
 
 def calculate_window_positions(
     num_windows: int,
-    window_width: int = 700,
-    window_height: int = 700,
-    x_offset: int = 1080,
-    gap: int = 20,
-    y_offset: int = 50,
+    window_width: int | None = None,
+    window_height: int | None = None,
+    x_offset: int | None = None,
+    gap: int | None = None,
+    y_offset: int | None = None,
 ) -> list[tuple[int, int]]:
     """Calculate tiled positions for browser windows on the screen.
 
     Args:
         num_windows: Number of windows to position
-        window_width: Width of each window
-        window_height: Height of each window
+        window_width: Width of each window (default from config)
+        window_height: Height of each window (default from config)
         x_offset: Horizontal offset to shift all windows (e.g., to target a specific monitor)
-        gap: Gap between windows in pixels
+        gap: Gap between windows in pixels (default from config)
         y_offset: Vertical offset from top of screen (for taskbar/title bars)
 
     Returns:
         List of (x, y) position tuples for each window.
     """
+    # Apply defaults from config
+    if window_width is None:
+        window_width = _config.browser.local.window_width
+    if window_height is None:
+        window_height = _config.browser.local.window_height
+    if x_offset is None:
+        x_offset = _config.local_cli.default_monitor_offset
+    if gap is None:
+        gap = _config.local_cli.window_gap
+    if y_offset is None:
+        y_offset = _config.local_cli.window_y_offset
+
     # Calculate optimal grid layout based on number of windows
     if num_windows == 1:
         cols = 1
@@ -173,34 +179,39 @@ async def login_and_save(headless: bool = True):
     )
 
     try:
-        agent = Agent(
-            task=f"""
-            Navigate to https://www.realcanadiansuperstore.ca/en and log in.
-
+        # Load login prompt from config
+        try:
+            task = _config.load_prompt(
+                "login",
+                base_url=_config.app.base_url,
+                username=username,
+                password=password,
+            )
+        except FileNotFoundError:
+            # Fallback to inline prompt
+            task = f"""
+            Navigate to {_config.app.base_url} and log in.
             Steps:
-            1. Go to https://www.realcanadiansuperstore.ca/en
-            2. If you see "My Shop" and "let's get started by shopping your regulars",
-               you are already logged in - call done.
+            1. Go to {_config.app.base_url}
+            2. Check if "Sign In" appears anywhere on the page. If it doesn't, stop and return success.
             3. Otherwise, click "Sign in" at top right.
             4. IMPORTANT: If you see an email address ({username}) displayed on the login page
                (this indicates a saved login), simply click on that email to proceed.
-               Then wait patiently for the login to complete - this may take several seconds.
             5. If you don't see the email displayed, enter username: {username}
             6. Then enter password: {password}
             7. Click the sign in button.
-            8. After clicking to sign in, wait patiently for as long as needed for the login
-               to complete. Do not rush - the page may take thirty seconds to load.
-            If you still see a loading spinner, wait for thirty seconds again.
-            9. Wait for "My Account" at top right to confirm login.
-
+            8. Wait for "My Account" at top right to confirm login.
             Complete when logged in successfully.
-            """,
-            llm=ChatGroq(model=MODEL_NAME),
+            """
+
+        agent = Agent(
+            task=task,
+            llm=ChatGroq(model=_config.llm.browser_model),
             browser_session=browser,
-            use_vision=False,
+            use_vision=_config.llm.browser_use_vision,
         )
 
-        await agent.run(max_steps=50)
+        await agent.run(max_steps=_config.agent.max_steps_login)
 
         print(f"Login successful! Profile saved to {user_data_dir}")
         return {"status": "success", "message": "Login successful"}
@@ -267,43 +278,46 @@ def add_single_item_process(args: tuple[str, int, int, tuple[int, int], str]) ->
     item, index, total, position, temp_profile_path = args
 
     async def _add_item():
+        # Load config inside the process (can't share across process boundary)
+        config = load_config()
+
         print(f"\n[{index}/{total}] Adding: {item}")
 
         browser = create_browser(
             user_data_dir=temp_profile_path,
             headless=False,  # Show browser for demo
             position=position,
-            window_size=(700, 700),
+            window_size=(config.browser.local.window_width, config.browser.local.window_height),
             use_stealth=False,  # Minimal args for local
         )
 
         try:
-            agent = Agent(
-                task=f"""
+            # Load add_item prompt from config
+            try:
+                task = config.load_prompt(
+                    "add_item",
+                    item=item,
+                    base_url=config.app.base_url,
+                )
+            except FileNotFoundError:
+                # Fallback to inline prompt
+                task = f"""
                 Add "{item}" to the shopping cart on Real Canadian Superstore.
-                Go to https://www.realcanadiansuperstore.ca/en
-
-                UNDERSTANDING THE ITEM REQUEST:
-                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
-                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
-                - Note the quantity requested (e.g., 6, 2 liters, 500g)
-
+                Go to {config.app.base_url}
                 Steps:
-                1. Search for the PRODUCT NAME (not the full quantity string)
-                   - For "6 apples", search for "apples"
-                   - For "2 liters milk", search for "milk"
-                2. Select the most relevant item that matches the quantity/size if possible
-                3. If a specific quantity is requested (like "6 apples"):
-                   - Look for a quantity selector and adjust before adding to cart
-                4. Click "Add to Cart" and wait for confirmation
+                1. Search for the product
+                2. Select the most relevant item
+                3. Click "Add to Cart"
+                Complete when the item is added to cart.
+                """
 
-                Complete when the item is added to cart with the correct quantity.
-                """,
-                llm=ChatGroq(model=MODEL_NAME),
+            agent = Agent(
+                task=task,
+                llm=ChatGroq(model=config.llm.browser_model),
                 browser_session=browser,
-                use_vision=False,
+                use_vision=config.llm.browser_use_vision,
             )
-            await agent.run(max_steps=50)
+            await agent.run(max_steps=config.agent.max_steps_add_item)
             print(f"[OK] [{index}/{total}] Added: {item}")
             return f"success: {item}"
         except Exception as e:
@@ -318,7 +332,7 @@ def add_single_item_process(args: tuple[str, int, int, tuple[int, int], str]) ->
     return asyncio.run(_add_item())
 
 
-async def add_items_to_cart(items: list[str], x_offset: int = 1080):
+async def add_items_to_cart(items: list[str], x_offset: int | None = None):
     """Adds all items to cart using parallel processes with tiled browser windows.
 
     Args:
@@ -328,10 +342,16 @@ async def add_items_to_cart(items: list[str], x_offset: int = 1080):
     Returns:
         Browser instance for checkout
     """
+    config = load_config()
+    max_workers = config.local_cli.max_parallel_workers
+
+    if x_offset is None:
+        x_offset = config.local_cli.default_monitor_offset
+
     print(f"\n[Starting] Adding {len(items)} items to cart in parallel...")
 
-    # Calculate window positions for tiling (max 4 parallel processes)
-    positions = calculate_window_positions(min(len(items), 4), x_offset=x_offset)
+    # Calculate window positions for tiling
+    positions = calculate_window_positions(min(len(items), max_workers), x_offset=x_offset)
 
     # Pre-create temp profiles before spawning processes to avoid race conditions
     # Each worker gets its own copy of the browser profile with lock files removed
@@ -346,7 +366,7 @@ async def add_items_to_cart(items: list[str], x_offset: int = 1080):
 
     # Run items in parallel processes
     try:
-        with multiprocessing.Pool(processes=min(len(items), 4)) as pool:
+        with multiprocessing.Pool(processes=min(len(items), max_workers)) as pool:
             results = pool.map(add_single_item_process, process_args)
     except KeyboardInterrupt:
         print("\n[Interrupted] Cleaning up temp profiles...")
@@ -398,36 +418,35 @@ def confirm_place_order() -> bool:
 
 async def checkout(browser):
     """Performs checkout using the existing browser session with items in cart."""
+    config = load_config()
     print("\n[Checkout] Starting checkout process...")
+
+    # Load checkout prompt from config
+    try:
+        task = config.load_prompt("checkout", base_url=config.app.base_url)
+    except FileNotFoundError:
+        # Fallback to inline prompt
+        task = f"""
+        Go to {config.app.base_url} and proceed through the checkout process.
+        The cart option should be at top right of the main page.
+        Navigate through all checkout steps and stop at the final order review page.
+        """
 
     # Step 1: Navigate to cart and proceed to checkout page (but don't place order yet)
     agent = Agent(
-        task="""
-        Go to the https://www.realcanadiansuperstore.ca/ and proceed through the checkout process.
-        The cart option should be at top right of the main page.
-
-        Navigate through all checkout steps:
-        - Delivery details: Click "select a time" and pick the next available time slot.
-        - Item details
-        - Contact details
-        - Driver tip
-        - Payment
-
-        Each step will need interaction and need to hit "Save & Continue" after each one.
-        Stop when you reach the final order review page where the "Place Order" button is visible and a dark green color.
-        """,
-        llm=ChatGroq(model=MODEL_NAME),
+        task=task,
+        llm=ChatGroq(model=config.llm.browser_model),
         browser_session=browser,
-        use_vision=False,
+        use_vision=config.llm.browser_use_vision,
     )
-    await agent.run(max_steps=100)
+    await agent.run(max_steps=config.agent.max_steps_checkout)
 
     # Step 2: Ask for final confirmation from user
     if confirm_place_order():
         print("\n[Checkout] Placing order...")
         # Step 3: Complete the order
         agent.add_new_task("Click the 'Place Order' or 'Submit Order' button to complete the purchase.")
-        await agent.run(max_steps=10)
+        await agent.run(max_steps=config.agent.max_steps_place_order)
         print("\n[Success] Order has been placed!")
     else:
         print("\n[Cancelled] Order was not placed.")
@@ -498,8 +517,8 @@ def main():
     shop_parser.add_argument(
         "--monitor-offset",
         type=int,
-        default=1080,
-        help="Horizontal pixel offset for window positioning (default: 1080, for secondary monitor)",
+        default=None,
+        help=f"Horizontal pixel offset for window positioning (default: {_config.local_cli.default_monitor_offset}, for secondary monitor)",
     )
     shop_parser.set_defaults(func=run_shop)
 

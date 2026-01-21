@@ -20,8 +20,12 @@ import modal
 # =============================================================================
 # Modal App Configuration
 # =============================================================================
+# Import config first to get app name
+from src.core.config import load_config
 
-app = modal.App("superstore-agent")
+_config = load_config()
+
+app = modal.App(_config.app.name)
 
 # Persistent volume for storing session cookies
 session_volume = modal.Volume.from_name("superstore-session", create_if_missing=True)
@@ -34,23 +38,9 @@ job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=
 # Shared Configuration (imported from core module)
 # =============================================================================
 
-# Import shared config from core to avoid duplication
-from core.browser import STEALTH_ARGS, get_proxy_config
-
-# Model configuration - single place to set the model
-MODEL_NAME = "openai/gpt-oss-120b"
-
-# Success indicators for detecting if item was added to cart
-SUCCESS_INDICATORS = [
-    "added to cart",
-    "add to cart",
-    "item added",
-    "cart updated",
-    "in your cart",
-    "added to your cart",
-    "quantity updated",
-]
-
+# Import shared config from core module
+from src.core.browser import STEALTH_ARGS, get_proxy_config
+from src.core.success import detect_success_from_history
 
 # =============================================================================
 # Modal Image Definition
@@ -98,14 +88,17 @@ image = (
             fi; \
         done'""",
     )
+    # Add src module for shared utilities
+    .add_local_python_source("src", copy=True)
     # Copy the local browser profile directory as a fallback profile
     .add_local_dir(
         "./superstore-profile",
         remote_path="/app/superstore-profile",
         copy=True,
     )
-    # Add core module for shared utilities
-    .add_local_python_source("core")
+    # Add config file and prompts directory
+    .add_local_file("config.toml", remote_path="/app/config.toml", copy=True)
+    .add_local_dir("./src/prompts", remote_path="/app/prompts", copy=True)
 )
 
 # Lighter image for chat UI (doesn't need browser)
@@ -116,10 +109,13 @@ chat_image = (
         "langchain-core",
         "langchain-openai",
         "langgraph",
+        "pydantic",
         "python-dotenv",
         "modal",
     )
-    .add_local_python_source("core")
+    .add_local_python_source("src", copy=True)
+    .add_local_file("config.toml", remote_path="/app/config.toml", copy=True)
+    .add_local_dir("./src/prompts", remote_path="/app/prompts", copy=True)
 )
 
 
@@ -130,27 +126,48 @@ chat_image = (
 
 def create_browser(
     shared_profile: bool = False,
-    use_proxy: bool = True,
-    wait_between_actions: float = 1.5,
-    minimum_wait_page_load_time: float = 1.5,
-    wait_for_network_idle_page_load_time: float = 1.5,
+    use_proxy: bool | None = None,
+    wait_between_actions: float | None = None,
+    minimum_wait_page_load_time: float | None = None,
+    wait_for_network_idle_page_load_time: float | None = None,
+    task_type: str = "add_item",
 ):
     """Create browser configured for Modal's containerized environment.
 
     Args:
         shared_profile: If True, use profile on volume for persistence across containers.
                         If False, use profile from image (for isolated containers).
-        use_proxy: If True, use proxy settings from environment. Default True.
+        use_proxy: If True, use proxy settings from environment. Default from config.
                    Set to False for login to avoid proxy IP blocking by auth servers.
-        wait_between_actions: Delay between browser actions in seconds. Default 1.5.
-        minimum_wait_page_load_time: Minimum wait for page loads in seconds. Default 1.5.
-        wait_for_network_idle_page_load_time: Wait for network idle in seconds. Default 1.5.
+        wait_between_actions: Delay between browser actions in seconds.
+        minimum_wait_page_load_time: Minimum wait for page loads in seconds.
+        wait_for_network_idle_page_load_time: Wait for network idle in seconds.
+        task_type: Type of task ("login" or "add_item") to load timing defaults.
     """
     from browser_use import Browser
     from browser_use.browser.profile import ProxySettings
 
+    config = load_config()
+    modal_config = config.browser.modal
+
+    # Get task-specific timing defaults
+    if task_type == "login":
+        timing = modal_config.login
+    else:
+        timing = modal_config.add_item
+
+    # Apply defaults from config
+    if use_proxy is None:
+        use_proxy = modal_config.use_proxy
+    if wait_between_actions is None:
+        wait_between_actions = timing.wait_between_actions
+    if minimum_wait_page_load_time is None:
+        minimum_wait_page_load_time = timing.min_wait_page_load
+    if wait_for_network_idle_page_load_time is None:
+        wait_for_network_idle_page_load_time = timing.wait_for_network_idle
+
     # Use shared profile on volume for persistence, or local profile from image
-    user_data_dir = "/session/profile" if shared_profile else "/app/superstore-profile"
+    user_data_dir = modal_config.profile_dir if shared_profile else modal_config.fallback_profile_dir
 
     # Build browser config with optional proxy
     proxy_settings = None
@@ -164,8 +181,8 @@ def create_browser(
             )
 
     return Browser(
-        headless=True,
-        window_size={"width": 1920, "height": 1080},
+        headless=modal_config.headless,
+        window_size={"width": modal_config.window_width, "height": modal_config.window_height},
         wait_between_actions=wait_between_actions,
         minimum_wait_page_load_time=minimum_wait_page_load_time,
         wait_for_network_idle_page_load_time=wait_for_network_idle_page_load_time,
@@ -174,37 +191,6 @@ def create_browser(
         args=STEALTH_ARGS,
         enable_default_extensions=False,  # Skip downloading uBlock, cookie consent, etc.
     )
-
-
-# =============================================================================
-# Success Detection
-# =============================================================================
-
-
-def detect_success_from_history(agent) -> tuple[bool, str | None]:
-    """Parse browser-use agent history to detect if item was added successfully."""
-    try:
-        extracted = agent.history.extracted_content()
-        for content in extracted:
-            content_lower = str(content).lower()
-            for indicator in SUCCESS_INDICATORS:
-                if indicator in content_lower:
-                    return True, str(content)[:100]
-
-        thoughts = agent.history.model_thoughts()
-        for thought in thoughts:
-            thought_lower = str(thought).lower()
-            if any(ind in thought_lower for ind in SUCCESS_INDICATORS):
-                return True, str(thought)[:100]
-
-        urls = agent.history.urls()
-        if urls and "cart" in urls[-1].lower():
-            return True, f"Ended on cart page: {urls[-1]}"
-
-    except Exception as e:
-        print(f"[Success Detection] Error: {e}")
-
-    return False, None
 
 
 # =============================================================================
@@ -222,9 +208,9 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
     volumes={"/session": session_volume},
     timeout=600,
     env={
-        "TIMEOUT_BrowserStartEvent": "120",
-        "TIMEOUT_BrowserLaunchEvent": "120",
-        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
+        "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
+        "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
         "IN_DOCKER": "True",
     },
     cpu=2,
@@ -236,6 +222,7 @@ def login_remote_streaming():
 
     from browser_use import Agent, ChatGroq
 
+    config = load_config()
     step_events: queue.Queue[dict] = queue.Queue()
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
 
@@ -248,12 +235,7 @@ def login_remote_streaming():
 
         print("[Login] Starting login process on Modal...")
         # Use longer delays for login to handle auth server latency
-        browser = create_browser(
-            shared_profile=True,
-            wait_between_actions=5.0,
-            minimum_wait_page_load_time=5.0,
-            wait_for_network_idle_page_load_time=5.0,
-        )
+        browser = create_browser(shared_profile=True, task_type="login")
         step_count = 0
 
         async def on_step_end(agent):
@@ -280,32 +262,36 @@ def login_remote_streaming():
             )
 
         try:
-            agent = Agent(
-                task=f"""
-                Navigate to https://www.realcanadiansuperstore.ca/en and log in.
-
+            # Load login prompt from config
+            try:
+                task = config.load_prompt(
+                    "login",
+                    base_url=config.app.base_url,
+                    username=username,
+                    password=password,
+                )
+            except FileNotFoundError:
+                # Fallback to inline prompt
+                task = f"""
+                Navigate to {config.app.base_url} and log in.
                 Steps:
-                1. Go to https://www.realcanadiansuperstore.ca/en
-                2. Check if "Sign In" appears anywhere on the page. If it doesn't, stop and return success.
-                3. Otherwise, click "Sign in" at top right.
-                4. IMPORTANT: If you see an email address ({username}) displayed on the login page
-                   (this indicates a saved login), simply click on that email to proceed.
-                   Then wait patiently for the login to complete - this may take several seconds.
-                5. If you don't see the email displayed, enter username: {username}
-                6. Then enter password: {password}
-                7. Click the sign in button.
-                8. After clicking to sign in, wait patiently for as long as needed for the login
-                   to complete. Do not rush - the page may take several seconds to load.
-                9. Wait for "My Account" at top right to confirm login.
-
+                1. Go to {config.app.base_url}
+                2. Check if "Sign In" appears. If not, return success.
+                3. Click "Sign in" at top right.
+                4. If you see an email address ({username}) displayed, click on it.
+                5. Otherwise, enter username: {username} and password: {password}
+                6. Click the sign in button and wait for login to complete.
                 Complete when logged in successfully.
-                """,
-                llm=ChatGroq(model=MODEL_NAME),
-                use_vision=False,
+                """
+
+            agent = Agent(
+                task=task,
+                llm=ChatGroq(model=config.llm.browser_model),
+                use_vision=config.llm.browser_use_vision,
                 browser_session=browser,
             )
 
-            await agent.run(max_steps=50, on_step_end=on_step_end)
+            await agent.run(max_steps=config.agent.max_steps_login, on_step_end=on_step_end)
 
             session_volume.commit()
             print("[Login] Session committed to Modal volume.")
@@ -352,7 +338,7 @@ def login_remote_streaming():
                 "steps": 0,
             }
         )
-    elif result_holder["result"]:
+    elif result_holder["result"] and isinstance(result_holder["result"], dict):
         yield json.dumps({"type": "complete", **result_holder["result"]})
     else:
         yield json.dumps(
@@ -375,9 +361,9 @@ def login_remote_streaming():
     volumes={"/session": session_volume},
     timeout=600,
     env={
-        "TIMEOUT_BrowserStartEvent": "120",
-        "TIMEOUT_BrowserLaunchEvent": "120",
-        "TIMEOUT_BrowserStateRequestEvent": "120",
+        "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
+        "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
+        "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
         "IN_DOCKER": "True",
     },
     cpu=2,
@@ -389,17 +375,13 @@ def add_item_remote_streaming(item: str, index: int):
 
     from browser_use import Agent, ChatGroq
 
+    config = load_config()
     step_events: queue.Queue[dict] = queue.Queue()
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
 
     async def _add_item():
         print(f"[Container {index}] Starting to add item: {item}")
-        browser = create_browser(
-            shared_profile=True,
-            wait_between_actions=1,
-            minimum_wait_page_load_time=1,
-            wait_for_network_idle_page_load_time=2.5,
-        )
+        browser = create_browser(shared_profile=True, task_type="add_item")
         step_count = 0
 
         async def on_step_end(agent):
@@ -437,38 +419,33 @@ def add_item_remote_streaming(item: str, index: int):
             )
 
         try:
-            agent = Agent(
-                task=f"""
-                You need to add "{item}" to the shopping cart on Real Canadian Superstore.
-                Go to https://www.realcanadiansuperstore.ca/en
-
-                UNDERSTANDING THE ITEM REQUEST:
-                The item "{item}" may include a quantity (e.g., "6 apples", "2 liters milk", "500g chicken breast").
-                - Extract the product name to search for (e.g., "apples", "milk", "chicken breast")
-                - Note the quantity requested (e.g., 6, 2 liters, 500g)
-
+            # Load add_item prompt from config
+            try:
+                task = config.load_prompt(
+                    "add_item",
+                    item=item,
+                    base_url=config.app.base_url,
+                )
+            except FileNotFoundError:
+                # Fallback to inline prompt
+                task = f"""
+                Add "{item}" to the shopping cart on Real Canadian Superstore.
+                Go to {config.app.base_url}
                 Steps:
-                1. Use the search bar to search for the PRODUCT NAME (not the full quantity string)
-                   - For "6 apples", search for "apples"
-                   - For "2 liters milk", search for "milk"
-                   - For "500g chicken breast", search for "chicken breast"
-                2. From the search results, select the most relevant item that matches the quantity/size if possible
-                   - If looking for "2 liters milk", prefer 2L milk containers
-                   - If looking for "500g chicken", prefer ~500g packages
-                3. If a specific quantity is requested (like "6 apples"):
-                   - Look for a quantity selector/input field on the product
-                   - Adjust the quantity before adding to cart
-                   - If no quantity selector, you may need to click "Add to Cart" multiple times
-                4. Click "Add to Cart", ensuring you have the correct quantity.
+                1. Search for the product
+                2. Select the most relevant item
+                3. Click "Add to Cart"
+                Complete when the item is added to cart.
+                """
 
-                Return success immediately when you've added the item, don't confirm the item was added.
-                """,
-                llm=ChatGroq(model=MODEL_NAME),
-                use_vision=False,
+            agent = Agent(
+                task=task,
+                llm=ChatGroq(model=config.llm.browser_model),
+                use_vision=config.llm.browser_use_vision,
                 browser_session=browser,
             )
 
-            await agent.run(max_steps=30, on_step_end=on_step_end)
+            await agent.run(max_steps=config.agent.max_steps_add_item, on_step_end=on_step_end)
 
             success, evidence = detect_success_from_history(agent)
 
@@ -537,7 +514,7 @@ def add_item_remote_streaming(item: str, index: int):
                 "steps": 0,
             }
         )
-    elif result_holder["result"]:
+    elif result_holder["result"] and isinstance(result_holder["result"], dict):
         yield json.dumps({"type": "complete", **result_holder["result"]})
     else:
         yield json.dumps(
@@ -572,7 +549,7 @@ def flask_app():
     from flask import Flask, Response, jsonify, request
     from langchain_core.messages import AIMessage, HumanMessage
 
-    from core.agent import create_chat_agent
+    from src.core.agent import create_chat_agent
 
     flask_app = Flask(__name__)
 

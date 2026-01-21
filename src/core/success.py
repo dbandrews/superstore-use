@@ -1,19 +1,20 @@
 """Success detection utilities for browser automation.
 
 Provides shared success detection logic for determining if items were
-successfully added to cart.
+successfully added to cart. Success indicators are loaded from config.toml.
 """
 
-# Success indicators for detecting if item was added to cart
-SUCCESS_INDICATORS = [
-    "added to cart",
-    "add to cart",
-    "item added",
-    "cart updated",
-    "in your cart",
-    "added to your cart",
-    "quantity updated",
-]
+from src.core.config import load_config
+
+
+def get_success_indicators() -> list[str]:
+    """Get success indicators from config.
+
+    Returns:
+        List of lowercase phrases indicating successful cart addition.
+    """
+    config = load_config()
+    return config.success_detection.indicators
 
 
 def detect_success_from_history(agent) -> tuple[bool, str | None]:
@@ -32,12 +33,14 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
             - success: True if item appears to have been added
             - evidence: Description of what indicated success, or None
     """
+    success_indicators = get_success_indicators()
+
     try:
         # Check extracted content for success indicators
         extracted = agent.history.extracted_content()
         for content in extracted:
             content_lower = str(content).lower()
-            for indicator in SUCCESS_INDICATORS:
+            for indicator in success_indicators:
                 if indicator in content_lower:
                     return True, str(content)[:100]
 
@@ -45,7 +48,7 @@ def detect_success_from_history(agent) -> tuple[bool, str | None]:
         thoughts = agent.history.model_thoughts()
         for thought in thoughts:
             thought_lower = str(thought).lower()
-            if any(ind in thought_lower for ind in SUCCESS_INDICATORS):
+            if any(ind in thought_lower for ind in success_indicators):
                 return True, str(thought)[:100]
 
         # Check if we ended up on cart page

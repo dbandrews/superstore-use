@@ -1,29 +1,22 @@
 """Browser configuration and creation utilities.
 
 Provides shared browser configuration for both local CLI and Modal deployments.
+All settings are loaded from config.toml via the config module.
 """
 
 import os
 from typing import Optional
 
-# Browser timeouts (set before browser-use imports in some contexts)
-os.environ.setdefault("TIMEOUT_BrowserStartEvent", "120")
-os.environ.setdefault("TIMEOUT_BrowserLaunchEvent", "120")
-os.environ.setdefault("TIMEOUT_BrowserStateRequestEvent", "120")
+from src.core.config import get_stealth_args, is_modal_environment, load_config
 
-# Stealth arguments to avoid bot detection (single source of truth)
-# Configured to mimic Chrome on Linux desktop to match actual browser fingerprint
-STEALTH_ARGS = [
-    "--disable-blink-features=AutomationControlled",  # Hide automation flag
-    "--disable-dev-shm-usage",
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-web-security",
-    "--disable-features=IsolateOrigins,site-per-process",
-    "--disable-accelerated-2d-canvas",
-    "--disable-gpu",
-    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-]
+# Load config and set browser timeouts
+_config = load_config()
+os.environ.setdefault("TIMEOUT_BrowserStartEvent", str(_config.browser.timeout_browser_start))
+os.environ.setdefault("TIMEOUT_BrowserLaunchEvent", str(_config.browser.timeout_browser_launch))
+os.environ.setdefault("TIMEOUT_BrowserStateRequestEvent", str(_config.browser.timeout_browser_state_request))
+
+# Export stealth args for backward compatibility with modal_app.py
+STEALTH_ARGS = get_stealth_args(_config)
 
 
 def get_profile_dir() -> tuple[str, bool]:
@@ -34,9 +27,10 @@ def get_profile_dir() -> tuple[str, bool]:
             - profile_path: Path to the browser profile directory
             - is_modal: True if running on Modal, False if local
     """
-    if os.path.exists("/session"):
-        return "/session/profile", True
-    return "./superstore-profile", False
+    config = load_config()
+    if is_modal_environment():
+        return config.browser.modal.profile_dir, True
+    return config.browser.local.profile_dir, False
 
 
 def get_proxy_config() -> Optional[dict]:
@@ -57,45 +51,82 @@ def get_proxy_config() -> Optional[dict]:
 
 def create_browser(
     user_data_dir: str | None = None,
-    headless: bool = True,
+    headless: bool | None = None,
     position: tuple[int, int] | None = None,
-    window_size: tuple[int, int] = (1920, 1080),
-    use_proxy: bool = False,
-    use_stealth: bool = True,
+    window_size: tuple[int, int] | None = None,
+    use_proxy: bool | None = None,
+    use_stealth: bool | None = None,
+    wait_between_actions: float | None = None,
+    minimum_wait_page_load_time: float | None = None,
+    wait_for_network_idle: float | None = None,
 ):
     """Create browser configured for Superstore automation.
 
     Works for both local development and Modal cloud deployment.
+    All defaults are loaded from config.toml based on the detected environment.
 
     Args:
         user_data_dir: Profile directory. Auto-detected if None.
-        headless: Run in headless mode. Default True for Modal, False for local.
+        headless: Run in headless mode. Auto-detected from config if None.
         position: Optional (x, y) window position for tiled windows.
-        window_size: Window dimensions as (width, height). Default (1920, 1080).
-        use_proxy: Whether to use proxy settings from environment. Default False.
+        window_size: Window dimensions as (width, height). Auto-detected if None.
+        use_proxy: Whether to use proxy settings from environment. Auto-detected if None.
         use_stealth: Whether to use stealth arguments for bot detection avoidance.
+        wait_between_actions: Delay between browser actions in seconds.
+        minimum_wait_page_load_time: Minimum wait for page loads in seconds.
+        wait_for_network_idle: Wait for network idle in seconds.
 
     Returns:
         Browser instance configured for Superstore automation.
     """
     from browser_use import Browser
 
+    config = load_config()
+    is_modal = is_modal_environment()
+
+    # Get environment-specific config
+    if is_modal:
+        env_config = config.browser.modal
+        timing = env_config.add_item  # Default to add_item timing for modal
+    else:
+        env_config = config.browser.local
+        timing = env_config.timing
+
     # Auto-detect profile directory
     if user_data_dir is None:
-        user_data_dir, _ = get_profile_dir()
+        user_data_dir = env_config.profile_dir
+
+    # Auto-detect headless mode
+    if headless is None:
+        headless = env_config.headless
+
+    # Auto-detect window size
+    if window_size is None:
+        window_size = (env_config.window_width, env_config.window_height)
+
+    # Auto-detect proxy usage
+    if use_proxy is None:
+        use_proxy = env_config.use_proxy
+
+    # Auto-detect stealth mode
+    if use_stealth is None:
+        use_stealth = env_config.use_stealth
+
+    # Auto-detect timing settings
+    if wait_between_actions is None:
+        wait_between_actions = timing.wait_between_actions
+    if minimum_wait_page_load_time is None:
+        minimum_wait_page_load_time = timing.min_wait_page_load
+    if wait_for_network_idle is None:
+        wait_for_network_idle = timing.wait_for_network_idle
 
     # Build browser arguments
     args = []
     if use_stealth:
-        args.extend(STEALTH_ARGS)
+        args.extend(get_stealth_args(config))
     else:
         # Minimal args for local development
         args.append("--disable-features=LockProfileCookieDatabase")
-
-    # Timing settings: faster for local, slower for Modal
-    wait_between_actions = 4
-    minimum_wait_page_load_time = 2.5
-    wait_for_network_idle = 2.5
 
     # Build browser kwargs
     browser_kwargs = {
