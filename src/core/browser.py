@@ -59,6 +59,9 @@ def create_browser(
     wait_between_actions: float | None = None,
     minimum_wait_page_load_time: float | None = None,
     wait_for_network_idle: float | None = None,
+    shared_profile: bool | None = None,
+    task_type: str | None = None,
+    enable_default_extensions: bool | None = None,
 ):
     """Create browser configured for Superstore automation.
 
@@ -75,6 +78,9 @@ def create_browser(
         wait_between_actions: Delay between browser actions in seconds.
         minimum_wait_page_load_time: Minimum wait for page loads in seconds.
         wait_for_network_idle: Wait for network idle in seconds.
+        shared_profile: Modal-only. If True, use volume profile; if False, use image profile.
+        task_type: Modal-only. "login" or "add_item" to select timing defaults.
+        enable_default_extensions: Whether to enable default browser extensions.
 
     Returns:
         Browser instance configured for Superstore automation.
@@ -87,14 +93,35 @@ def create_browser(
     # Get environment-specific config
     if is_modal:
         env_config = config.browser.modal
-        timing = env_config.add_item  # Default to add_item timing for modal
     else:
         env_config = config.browser.local
-        timing = env_config.timing
 
     # Auto-detect profile directory
     if user_data_dir is None:
-        user_data_dir = env_config.profile_dir
+        if is_modal:
+            # Modal: Use shared_profile parameter to choose between volume and image profile
+            if shared_profile is True:
+                user_data_dir = config.browser.modal.profile_dir  # /session/profile
+            elif shared_profile is False:
+                user_data_dir = config.browser.modal.fallback_profile_dir
+            else:
+                # Default to shared profile for Modal
+                user_data_dir = config.browser.modal.profile_dir
+        else:
+            user_data_dir = env_config.profile_dir
+
+    # Select timing configuration
+    if is_modal:
+        # Modal: Use task_type to select timing
+        if task_type == "login":
+            timing = config.browser.modal.login
+        elif task_type == "add_item":
+            timing = config.browser.modal.add_item
+        else:
+            # Default to add_item timing for backward compatibility
+            timing = config.browser.modal.add_item
+    else:
+        timing = env_config.timing
 
     # Auto-detect headless mode
     if headless is None:
@@ -128,6 +155,11 @@ def create_browser(
         # Minimal args for local development
         args.append("--disable-features=LockProfileCookieDatabase")
 
+    # Auto-detect extension handling
+    if enable_default_extensions is None:
+        # Modal disables extensions by default, local enables them
+        enable_default_extensions = not is_modal
+
     # Build browser kwargs
     browser_kwargs = {
         "headless": headless,
@@ -137,6 +169,7 @@ def create_browser(
         "wait_for_network_idle_page_load_time": wait_for_network_idle,
         "user_data_dir": user_data_dir,
         "args": args,
+        "enable_default_extensions": enable_default_extensions,
     }
 
     # Add window position if specified (for tiled windows)

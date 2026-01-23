@@ -60,9 +60,9 @@ wait_for_network_idle = 5.0
 
 # Add item task - faster timing for browsing
 [browser.modal.add_item]
-wait_between_actions = 1.0
-min_wait_page_load = 1.0
-wait_for_network_idle = 2.5
+wait_between_actions = 0.1
+min_wait_page_load = 0.1
+wait_for_network_idle = 0.1
 
 [llm]
 chat_model = "llama-3.3-70b-versatile"
