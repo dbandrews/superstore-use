@@ -163,10 +163,7 @@ def login_remote_streaming():
 
         print("[Login] Starting login process on Modal...")
         # Use longer delays for login to handle auth server latency
-        browser = create_browser(
-            shared_profile=True,
-            task_type="login"
-        )
+        browser = create_browser(shared_profile=True, task_type="login")
         step_count = 0
 
         async def on_step_end(agent):
@@ -312,10 +309,7 @@ def add_item_remote_streaming(item: str, index: int):
 
     async def _add_item():
         print(f"[Container {index}] Starting to add item: {item}")
-        browser = create_browser(
-            shared_profile=True,
-            task_type="add_item"
-        )
+        browser = create_browser(shared_profile=True, task_type="add_item")
         step_count = 0
 
         async def on_step_end(agent):
@@ -463,6 +457,165 @@ def add_item_remote_streaming(item: str, index: int):
         )
 
 
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("groq-secret"),
+        modal.Secret.from_name("oxy-proxy"),
+        modal.Secret.from_name("superstore"),
+    ],
+    volumes={"/session": session_volume},
+    timeout=600,
+    env={
+        "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
+        "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
+        "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
+        "IN_DOCKER": "True",
+    },
+    cpu=2,
+    memory=4096,
+)
+def view_cart_remote_streaming():
+    """Generator version that yields JSON progress events for viewing cart contents."""
+    import queue
+
+    from browser_use import Agent, ChatGroq
+
+    config = load_config()
+    step_events: queue.Queue[dict] = queue.Queue()
+    result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
+
+    async def _view_cart():
+        print("[ViewCart] Starting to view cart contents...")
+        browser = create_browser(shared_profile=True, task_type="add_item")
+        step_count = 0
+        cart_contents = ""
+
+        async def on_step_end(agent):
+            nonlocal step_count
+            step_count += 1
+
+            model_outputs = agent.history.model_outputs()
+            latest_output = model_outputs[-1] if model_outputs else None
+
+            thinking = None
+            next_goal = None
+
+            if latest_output:
+                thinking = latest_output.thinking
+                next_goal = latest_output.next_goal
+
+            step_events.put(
+                {
+                    "type": "step",
+                    "step": step_count,
+                    "thinking": thinking,
+                    "next_goal": next_goal,
+                }
+            )
+
+        try:
+            cart_url = f"{config.app.base_url}/cartReview"
+
+            try:
+                task = config.load_prompt(
+                    "view_cart",
+                    cart_url=cart_url,
+                )
+            except FileNotFoundError:
+                task = f"""
+                Navigate to {cart_url} and extract all items in the shopping cart.
+                Return a bullet point list of all items with quantities and prices.
+                If the cart is empty, return "Your cart is empty."
+                """
+
+            agent = Agent(
+                task=task,
+                llm=ChatGroq(model=config.llm.browser_model),
+                use_vision=config.llm.browser_use_vision,
+                browser_session=browser,
+            )
+
+            await agent.run(max_steps=config.agent.max_steps_view_cart, on_step_end=on_step_end)
+
+            # Extract cart contents from agent's extracted_content (primary source)
+            extracted = agent.history.extracted_content()
+            if extracted:
+                cart_contents = "\n".join(extracted)
+
+            # Fallback: check model outputs for any relevant text
+            if not cart_contents:
+                model_outputs = agent.history.model_outputs()
+                if model_outputs:
+                    last_output = model_outputs[-1]
+                    if last_output.thinking:
+                        cart_contents = last_output.thinking
+
+            return {
+                "status": "success",
+                "cart_contents": cart_contents or "Unable to extract cart contents.",
+                "steps": step_count,
+            }
+
+        except Exception as e:
+            return {
+                "status": "failed",
+                "message": str(e),
+                "cart_contents": "",
+                "steps": step_count,
+            }
+        finally:
+            await browser.kill()
+
+    def run_async():
+        try:
+            result_holder["result"] = asyncio.run(_view_cart())
+        except Exception as e:
+            result_holder["error"] = str(e)
+
+    worker_thread = threading.Thread(target=run_async)
+    worker_thread.start()
+
+    yield json.dumps({"type": "start"})
+
+    while worker_thread.is_alive():
+        try:
+            event = step_events.get(timeout=0.5)
+            yield json.dumps(event)
+        except queue.Empty:
+            pass
+
+    while not step_events.empty():
+        try:
+            event = step_events.get_nowait()
+            yield json.dumps(event)
+        except queue.Empty:
+            break
+
+    if result_holder["error"]:
+        yield json.dumps(
+            {
+                "type": "complete",
+                "status": "failed",
+                "message": result_holder["error"],
+                "cart_contents": "",
+                "steps": 0,
+            }
+        )
+    elif result_holder["result"] and isinstance(result_holder["result"], dict):
+        yield json.dumps({"type": "complete", **result_holder["result"]})
+    else:
+        yield json.dumps(
+            {
+                "type": "complete",
+                "status": "failed",
+                "message": "Unknown error",
+                "cart_contents": "",
+                "steps": 0,
+            }
+        )
+
+
 # =============================================================================
 # Chat UI Flask App
 # =============================================================================
@@ -470,12 +623,15 @@ def add_item_remote_streaming(item: str, index: int):
 
 @app.function(
     image=chat_image,
-    secrets=[modal.Secret.from_name("groq-secret")],
+    secrets=[
+        modal.Secret.from_name("groq-secret"),
+        modal.Secret.from_name("web-auth", required_keys=["WEB_AUTH_TOKEN"]),
+    ],
     timeout=600,
     cpu=1,
     memory=2048,
 )
-@modal.wsgi_app()
+@modal.wsgi_app(label=_config.app.name)  # Change this label to something unique for your deployment
 def flask_app():
     """Flask app for the chat UI."""
     import time
@@ -485,7 +641,8 @@ def flask_app():
 
     from src.core.agent import create_chat_agent
 
-    flask_app = Flask(__name__)
+    # Explicitly set template and static folders to match Modal paths
+    flask_app = Flask(__name__, template_folder="/app/templates", static_folder="/app/static")
 
     # Store agent instances per session
     agents = {}
@@ -558,13 +715,29 @@ def flask_app():
         except Exception:
             return None
 
+    # Simple token-based authentication
+    def check_auth():
+        """Check if request has valid auth token."""
+        expected_token = os.environ.get("WEB_AUTH_TOKEN", "")
+        if not expected_token:
+            return True  # No auth required if token not set
+
+        # Check query param or header
+        token = request.args.get("token") or request.headers.get("X-Auth-Token")
+        return token == expected_token
+
     @flask_app.route("/")
     def index():
+        if not check_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         return render_template("chat.html")
 
     @flask_app.route("/api/chat/stream", methods=["POST"])
     def chat_stream():
         """Handle chat messages with SSE streaming for progress updates."""
+        if not check_auth():
+            return jsonify({"error": "Unauthorized"}), 401
+
         import asyncio
         import queue
 

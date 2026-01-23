@@ -118,6 +118,7 @@ class AgentConfig(BaseModel):
     max_steps_add_item: int = 30
     max_steps_checkout: int = 100
     max_steps_place_order: int = 10
+    max_steps_view_cart: int = 20
 
 
 class PromptsConfig(BaseModel):
@@ -127,6 +128,7 @@ class PromptsConfig(BaseModel):
     login: str = "prompts/login.md"
     add_item: str = "prompts/add_item.md"
     checkout: str = "prompts/checkout.md"
+    view_cart: str = "prompts/view_cart.md"
 
 
 class SuccessDetectionConfig(BaseModel):

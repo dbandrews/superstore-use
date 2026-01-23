@@ -4,6 +4,7 @@
 # Sensitive values (API keys, credentials, proxy) should remain in .env
 
 [app]
+# SECURITY: Change this to a unique name for your Modal deployment to prevent URL guessing
 name = "superstore-agent"
 base_url = "https://www.realcanadiansuperstore.ca/en"
 
@@ -75,12 +76,14 @@ max_steps_login = 50
 max_steps_add_item = 30
 max_steps_checkout = 100
 max_steps_place_order = 10
+max_steps_view_cart = 20
 
 [prompts]
 chat_system = "prompts/chat_system.md"
 login = "prompts/login.md"
 add_item = "prompts/add_item.md"
 checkout = "prompts/checkout.md"
+view_cart = "prompts/view_cart.md"
 
 [success_detection]
 indicators = [

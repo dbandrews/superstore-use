@@ -1,0 +1,21 @@
+Navigate to {cart_url} and extract all items in the shopping cart.
+
+Steps:
+1. Go to {cart_url}
+2. Wait for the cart page to load completely
+3. Look for all product items listed in the cart
+4. For each item, note:
+   - Product name
+   - Quantity
+   - Price (if visible)
+
+IMPORTANT: Return a bullet point list of all items in this exact format:
+- [quantity]x [product name] - $[price]
+
+Examples:
+- 2x Bananas - $1.49
+- 1x 2% Milk 4L - $6.99
+- 3x Whole Wheat Bread - $3.49
+
+If the cart is empty, return exactly: "Your cart is empty."
+If you cannot access the cart (login required), return exactly: "Unable to access cart - login may be required."

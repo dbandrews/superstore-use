@@ -373,19 +373,110 @@ def add_items_to_cart(items: list[str]) -> str:
     return final_summary or "Completed processing items."
 
 
+def view_cart_streaming() -> Generator[dict, None, str]:
+    """
+    Streaming view cart that yields progress events.
+
+    Yields login events if needed, then cart viewing events.
+    Returns cart contents as string.
+    """
+    import json
+
+    # Ensure logged in first - forward login events
+    global _logged_in
+    if _logged_in:
+        yield {"type": "status", "message": "Already logged in"}
+    else:
+        yield {"type": "status", "message": "Logging in to Superstore..."}
+
+    login_gen = _ensure_logged_in_streaming()
+    login_ok = False
+    login_msg = ""
+
+    for event in login_gen:
+        yield event
+        if event.get("type") == "login_complete":
+            login_ok = event.get("status") == "success"
+            login_msg = event.get("message", "")
+
+    if not login_ok:
+        yield {"type": "error", "message": f"Login failed: {login_msg}"}
+        return f"Cannot view cart: {login_msg}"
+
+    yield {"type": "status", "message": "Viewing cart contents..."}
+
+    try:
+        view_cart_fn = get_modal_function("view_cart_remote_streaming")
+
+        cart_contents = ""
+
+        for event_json in view_cart_fn.remote_gen():
+            event = json.loads(event_json)
+            event_type = event.get("type")
+
+            if event_type == "start":
+                yield {"type": "view_cart_start"}
+            elif event_type == "step":
+                yield {
+                    "type": "view_cart_step",
+                    "step": event.get("step", 0),
+                    "thinking": event.get("thinking"),
+                    "next_goal": event.get("next_goal"),
+                }
+            elif event_type == "complete":
+                status = event.get("status", "failed")
+                cart_contents = event.get("cart_contents", "")
+                steps = event.get("steps", 0)
+
+                yield {
+                    "type": "view_cart_complete",
+                    "status": status,
+                    "cart_contents": cart_contents,
+                    "steps": steps,
+                }
+
+                if status == "success":
+                    return cart_contents or "Unable to extract cart contents."
+                else:
+                    error_msg = event.get("message", "Unknown error")
+                    return f"Failed to view cart: {error_msg}"
+
+        return cart_contents or "Unable to retrieve cart contents."
+
+    except modal.exception.NotFoundError:
+        error_msg = (
+            f"Error: Modal app '{MODAL_APP_NAME}' not found. Please deploy it first with: modal deploy modal/app.py"
+        )
+        yield {"type": "error", "message": error_msg}
+        return error_msg
+    except Exception as e:
+        error_msg = f"Error viewing cart: {str(e)}"
+        yield {"type": "error", "message": error_msg}
+        return error_msg
+
+
 @tool
 def view_cart() -> str:
     """
     View the current cart contents at Real Canadian Superstore.
 
-    Note: This tool is not yet implemented for Modal.
+    Navigates to the cart review page and extracts all items.
 
     Returns:
-        Description of items currently in cart.
+        Bullet point list of items in cart with quantities and prices.
     """
-    return (
-        "Cart viewing is not yet available via Modal. Please check the Superstore website directly to view your cart."
-    )
+    writer = get_stream_writer()
+    final_result = ""
+
+    for event in view_cart_streaming():
+        if writer:
+            writer({"progress": event})
+        if event.get("type") == "view_cart_complete":
+            final_result = event.get("cart_contents", "")
+        elif event.get("type") == "error":
+            final_result = event.get("message", "Error viewing cart")
+
+    return final_result or "Unable to retrieve cart contents."
 
 
 # Streaming-aware tools for the agent

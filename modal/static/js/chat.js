@@ -4,11 +4,24 @@ let groceryList = [];
 let currentJobId = null;
 let currentAbortController = null;
 
+// Get auth token from URL query parameter
+const urlParams = new URLSearchParams(window.location.search);
+const authToken = urlParams.get('token') || '';
+
 function saveJobId(jobId) { currentJobId = jobId; localStorage.setItem('currentJobId_' + threadId, jobId); localStorage.setItem('currentJobTime_' + threadId, Date.now().toString()); }
 function clearJobId() { currentJobId = null; localStorage.removeItem('currentJobId_' + threadId); localStorage.removeItem('currentJobTime_' + threadId); }
 function getSavedJobId() { const jobId = localStorage.getItem('currentJobId_' + threadId); const jobTime = localStorage.getItem('currentJobTime_' + threadId); if (jobId && jobTime && (Date.now() - parseInt(jobTime)) < 600000) return jobId; return null; }
 
-async function pollJobStatus(jobId) { try { const r = await fetch(`/api/job/${jobId}/status`); return r.ok ? await r.json() : null; } catch (e) { return null; } }
+async function pollJobStatus(jobId) {
+    try {
+        const headers = {};
+        if (authToken) headers['X-Auth-Token'] = authToken;
+        const r = await fetch(`/api/job/${jobId}/status`, { headers: headers });
+        return r.ok ? await r.json() : null;
+    } catch (e) {
+        return null;
+    }
+}
 
 function addMessage(content, type) {
     const messages = document.getElementById('messages');
@@ -159,9 +172,13 @@ async function sendMessage() {
     const abortSignal = currentAbortController.signal;
 
     try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (authToken) {
+            headers['X-Auth-Token'] = authToken;
+        }
         const response = await fetch('/api/chat/stream', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ thread_id: threadId, message: message }),
             signal: abortSignal
         });
