@@ -109,3 +109,13 @@ chrome_lock_files = [
     "lockfile",
     "parent.lock",
 ]
+
+# Human-like typing configuration for credential entry
+# These settings control the delays between keystrokes to avoid bot detection
+[typing]
+min_delay_ms = 50          # Minimum delay between keystrokes (ms)
+max_delay_ms = 150         # Maximum delay between keystrokes (ms)
+typo_probability = 0.0     # Probability of making a typo (0.0 = never)
+pause_probability = 0.1    # Probability of longer pause between characters
+pause_min_ms = 200         # Minimum pause duration (ms)
+pause_max_ms = 500         # Maximum pause duration (ms)

@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 from src.core.browser import create_browser, get_profile_dir
 from src.core.config import load_config
+from src.core.tools import get_default_typing_tools
 
 # Load configuration
 _config = load_config()
@@ -204,11 +205,15 @@ async def login_and_save(headless: bool = True):
             Complete when logged in successfully.
             """
 
+        # Use typing tools for human-like credential entry
+        typing_tools = get_default_typing_tools()
+
         agent = Agent(
             task=task,
             llm=ChatGroq(model=_config.llm.browser_model),
             browser_session=browser,
             use_vision=_config.llm.browser_use_vision,
+            tools=typing_tools,
         )
 
         await agent.run(max_steps=_config.agent.max_steps_login)

@@ -165,6 +165,17 @@ class LocalCLIConfig(BaseModel):
     )
 
 
+class TypingConfig(BaseModel):
+    """Human-like typing configuration for credential entry."""
+
+    min_delay_ms: int = 50
+    max_delay_ms: int = 150
+    typo_probability: float = 0.0
+    pause_probability: float = 0.1
+    pause_min_ms: int = 200
+    pause_max_ms: int = 500
+
+
 class Config(BaseModel):
     """Root configuration model."""
 
@@ -175,6 +186,7 @@ class Config(BaseModel):
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
     success_detection: SuccessDetectionConfig = Field(default_factory=SuccessDetectionConfig)
     local_cli: LocalCLIConfig = Field(default_factory=LocalCLIConfig)
+    typing: TypingConfig = Field(default_factory=TypingConfig)
 
     def load_prompt(self, name: str, **kwargs) -> str:
         """Load and format a prompt template.
