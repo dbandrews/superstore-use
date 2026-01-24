@@ -45,7 +45,8 @@ wait_for_network_idle = 2.5
 
 # Modal deployment settings
 [browser.modal]
-headless = true
+# Run non-headless in xvfb virtual display to avoid bot detection
+headless = false
 profile_dir = "/session/profile"
 fallback_profile_dir = "/app/superstore-profile"
 window_width = 1920

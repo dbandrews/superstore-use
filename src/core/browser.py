@@ -5,9 +5,86 @@ All settings are loaded from config.toml via the config module.
 """
 
 import os
+import subprocess
 from typing import Optional
 
 from src.core.config import get_stealth_args, is_modal_environment, load_config
+
+# Global to track if xvfb is already started
+_xvfb_process: subprocess.Popen | None = None
+
+
+def start_xvfb(display: str = ":99", screen: str = "0", resolution: str = "1920x1080x24") -> bool:
+    """Start Xvfb virtual display for running browser non-headless in Modal.
+
+    This allows the browser to run in a virtual display, avoiding headless mode
+    which can be detected by anti-bot systems.
+
+    Args:
+        display: X display number (default :99)
+        screen: Screen number (default 0)
+        resolution: Screen resolution WxHxD (default 1920x1080x24)
+
+    Returns:
+        True if xvfb was started successfully, False otherwise.
+    """
+    global _xvfb_process
+
+    # Only start xvfb in Modal environment
+    if not is_modal_environment():
+        return False
+
+    # Check if already running
+    if _xvfb_process is not None and _xvfb_process.poll() is None:
+        return True
+
+    # Check if xvfb is available
+    try:
+        subprocess.run(["which", "Xvfb"], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("[Xvfb] Xvfb not found, running in headless mode")
+        return False
+
+    try:
+        # Start Xvfb
+        _xvfb_process = subprocess.Popen(
+            ["Xvfb", display, "-screen", screen, resolution],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Set DISPLAY environment variable
+        os.environ["DISPLAY"] = display
+
+        # Give xvfb a moment to start
+        import time
+        time.sleep(0.5)
+
+        # Check if process is still running
+        if _xvfb_process.poll() is not None:
+            print(f"[Xvfb] Failed to start (exit code: {_xvfb_process.returncode})")
+            return False
+
+        print(f"[Xvfb] Started virtual display on {display}")
+        return True
+
+    except Exception as e:
+        print(f"[Xvfb] Error starting xvfb: {e}")
+        return False
+
+
+def stop_xvfb() -> None:
+    """Stop the Xvfb process if running."""
+    global _xvfb_process
+
+    if _xvfb_process is not None:
+        _xvfb_process.terminate()
+        try:
+            _xvfb_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _xvfb_process.kill()
+        _xvfb_process = None
+        print("[Xvfb] Stopped virtual display")
 
 # Load config and set browser timeouts
 _config = load_config()
