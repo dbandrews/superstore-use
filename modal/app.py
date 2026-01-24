@@ -39,7 +39,7 @@ job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=
 # =============================================================================
 
 # Import shared config from core module
-from src.core.browser import create_browser
+from src.core.browser import create_browser, start_xvfb
 from src.core.success import detect_success_from_history
 
 # =============================================================================
@@ -75,6 +75,8 @@ image = (
         "libxcb1",
         "fonts-liberation",
         "xdg-utils",
+        # Xvfb for running browser non-headless in virtual display
+        "xvfb",
     )
     .uv_sync(uv_project_dir="./")
     .env({"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"})
@@ -149,6 +151,9 @@ def login_remote_streaming():
     import queue
 
     from browser_use import Agent, ChatGroq
+
+    # Start xvfb for non-headless browser in Modal
+    start_xvfb()
 
     config = load_config()
     step_events: queue.Queue[dict] = queue.Queue()
@@ -302,6 +307,9 @@ def add_item_remote_streaming(item: str, index: int):
     import queue
 
     from browser_use import Agent, ChatGroq
+
+    # Start xvfb for non-headless browser in Modal
+    start_xvfb()
 
     config = load_config()
     step_events: queue.Queue[dict] = queue.Queue()
@@ -480,6 +488,9 @@ def view_cart_remote_streaming():
     import queue
 
     from browser_use import Agent, ChatGroq
+
+    # Start xvfb for non-headless browser in Modal
+    start_xvfb()
 
     config = load_config()
     step_events: queue.Queue[dict] = queue.Queue()
