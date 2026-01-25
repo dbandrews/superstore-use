@@ -35,13 +35,12 @@ job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=
 
 
 # =============================================================================
-# Shared Configuration (imported from core module)
+# Shared Configuration
 # =============================================================================
-
-# Import shared config from core module
-from src.core.browser import create_browser, start_xvfb
-from src.core.success import detect_success_from_history
-from src.core.tools import get_default_typing_tools
+# NOTE: Browser-related imports (create_browser, start_xvfb, detect_success_from_history,
+# get_default_typing_tools) are imported inside the functions that need them.
+# This avoids importing browser_use at module level, which would fail for the chat_image
+# that doesn't have browser_use installed.
 
 # =============================================================================
 # Modal Image Definition
@@ -152,6 +151,9 @@ def login_remote_streaming():
     import queue
 
     from browser_use import Agent, ChatGroq
+
+    from src.core.browser import create_browser, start_xvfb
+    from src.core.tools import get_default_typing_tools
 
     # Start xvfb for non-headless browser in Modal
     start_xvfb()
@@ -312,6 +314,9 @@ def add_item_remote_streaming(item: str, index: int):
     import queue
 
     from browser_use import Agent, ChatGroq
+
+    from src.core.browser import create_browser, start_xvfb
+    from src.core.success import detect_success_from_history
 
     # Start xvfb for non-headless browser in Modal
     start_xvfb()
@@ -493,6 +498,8 @@ def view_cart_remote_streaming():
     import queue
 
     from browser_use import Agent, ChatGroq
+
+    from src.core.browser import create_browser, start_xvfb
 
     # Start xvfb for non-headless browser in Modal
     start_xvfb()
