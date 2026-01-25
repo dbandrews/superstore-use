@@ -2,6 +2,10 @@
 
 Provides tools that can be registered with browser-use Agent via the Tools class.
 These tools add more realistic, human-like behavior to browser automation.
+
+Note: browser-use's Page object (from browser_use.actor.page) uses CDP (Chrome DevTools
+Protocol) directly and does NOT have a Playwright-style `keyboard` attribute. Instead,
+we use CDP's Input.insertText for text input and page.press() for special keys.
 """
 
 import asyncio
@@ -9,6 +13,40 @@ import random
 
 from browser_use import ActionResult
 from browser_use.browser.session import BrowserSession
+
+
+async def _type_text_with_delays(
+    page,
+    text: str,
+    min_delay_ms: int,
+    max_delay_ms: int,
+    pause_probability: float,
+    pause_min_ms: int,
+    pause_max_ms: int,
+) -> None:
+    """Type text character by character using CDP Input.insertText.
+
+    browser-use's Page uses CDP directly, so we access the CDP client
+    to insert text with human-like delays between characters.
+    """
+    session_id = await page._ensure_session()
+
+    for char in text:
+        # Calculate delay for this character
+        delay_ms = random.randint(min_delay_ms, max_delay_ms)
+
+        # Occasionally add a longer pause (simulates human reading/thinking)
+        if random.random() < pause_probability:
+            delay_ms += random.randint(pause_min_ms, pause_max_ms)
+
+        # Use CDP Input.insertText to insert the character
+        await page._client.send.Input.insertText(
+            {"text": char},
+            session_id=session_id,
+        )
+
+        # Wait before next character
+        await asyncio.sleep(delay_ms / 1000.0)
 
 
 def create_typing_tools(
@@ -63,24 +101,20 @@ def create_typing_tools(
             if not page:
                 return ActionResult(error="No active page found")
 
-            # Type each character with random delay
-            for i, char in enumerate(text):
-                # Calculate delay for this character
-                delay_ms = random.randint(min_delay_ms, max_delay_ms)
-
-                # Occasionally add a longer pause (simulates human reading/thinking)
-                if random.random() < pause_probability:
-                    delay_ms += random.randint(pause_min_ms, pause_max_ms)
-
-                # Type the character
-                await page.keyboard.type(char, delay=0)
-
-                # Wait before next character
-                await asyncio.sleep(delay_ms / 1000.0)
+            # Type each character with random delay using CDP
+            await _type_text_with_delays(
+                page,
+                text,
+                min_delay_ms,
+                max_delay_ms,
+                pause_probability,
+                pause_min_ms,
+                pause_max_ms,
+            )
 
             if press_enter_after:
                 await asyncio.sleep(random.randint(min_delay_ms, max_delay_ms) / 1000.0)
-                await page.keyboard.press("Enter")
+                await page.press("Enter")
 
             return ActionResult(
                 extracted_content=f"Typed {len(text)} characters with human-like delays"
@@ -113,6 +147,8 @@ def create_typing_tools(
             if not page:
                 return ActionResult(error="No active page found")
 
+            session_id = await page._ensure_session()
+
             # Type each character with random delay
             for char in email:
                 delay_ms = random.randint(min_delay_ms, max_delay_ms)
@@ -121,7 +157,11 @@ def create_typing_tools(
                 if char in ("@", "."):
                     delay_ms += random.randint(50, 150)
 
-                await page.keyboard.type(char, delay=0)
+                # Use CDP Input.insertText to insert the character
+                await page._client.send.Input.insertText(
+                    {"text": char},
+                    session_id=session_id,
+                )
                 await asyncio.sleep(delay_ms / 1000.0)
 
             return ActionResult(
@@ -156,6 +196,8 @@ def create_typing_tools(
             if not page:
                 return ActionResult(error="No active page found")
 
+            session_id = await page._ensure_session()
+
             # Type each character with random delay
             for char in password:
                 delay_ms = random.randint(min_delay_ms, max_delay_ms)
@@ -164,7 +206,11 @@ def create_typing_tools(
                 if random.random() < pause_probability:
                     delay_ms += random.randint(pause_min_ms, pause_max_ms)
 
-                await page.keyboard.type(char, delay=0)
+                # Use CDP Input.insertText to insert the character
+                await page._client.send.Input.insertText(
+                    {"text": char},
+                    session_id=session_id,
+                )
                 await asyncio.sleep(delay_ms / 1000.0)
 
             return ActionResult(
