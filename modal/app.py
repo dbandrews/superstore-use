@@ -41,6 +41,7 @@ job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=
 # Import shared config from core module
 from src.core.browser import create_browser, start_xvfb
 from src.core.success import detect_success_from_history
+from src.core.tools import get_default_typing_tools
 
 # =============================================================================
 # Modal Image Definition
@@ -217,11 +218,15 @@ def login_remote_streaming():
                 Complete when logged in successfully.
                 """
 
+            # Use typing tools for human-like credential entry
+            typing_tools = get_default_typing_tools()
+
             agent = Agent(
                 task=task,
                 llm=ChatGroq(model=config.llm.browser_model),
                 use_vision=config.llm.browser_use_vision,
                 browser_session=browser,
+                tools=typing_tools,
             )
 
             await agent.run(max_steps=config.agent.max_steps_login, on_step_end=on_step_end)
