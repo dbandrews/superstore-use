@@ -26,7 +26,7 @@ superstore-use/
             add_item.md
             checkout.md
             chat_system.md
-    modal_app.py             # Single unified Modal deployment (stays in root)
+    modal/app.py             # Single unified Modal deployment
     config.toml              # Configuration file
     agent_docs/              # Documentation for Modal deployment
     superstore-profile/      # Persisted browser state (cookies, login session)
@@ -38,7 +38,8 @@ superstore-use/
 |---------|---------|
 | `uv run -m src.local.cli login` | Local login to save browser profile |
 | `uv run -m src.local.cli shop` | Local shopping with parallel browser windows |
-| `modal deploy modal_app.py` | Deploy unified Modal app (chat UI + automation) |
+| `uv run modal run modal/app.py::upload_profile` | Upload local profile to Modal volume |
+| `uv run modal deploy modal/app.py` | Deploy unified Modal app (chat UI + automation) |
 
 ### Core Flow
 
@@ -56,7 +57,7 @@ superstore-use/
 | `src/core/success.py` | Success indicators and detection from agent history |
 | `src/core/agent.py` | LangGraph chat agent with Modal tool wrappers |
 | `src/local/cli.py` | Local CLI with login and parallel shopping commands |
-| `modal_app.py` | Modal functions (login, add_item) + Chat UI Flask app |
+| `modal/app.py` | Modal functions (login, add_item, upload_profile) + Chat UI Flask app |
 
 ## Tech Stack
 
@@ -106,6 +107,15 @@ uv run -m src.local.cli login          # Headless
 uv run -m src.local.cli login --headed # Visible browser for debugging
 ```
 
+**Upload profile to Modal (required for Modal deployment):**
+```bash
+# After logging in locally, sync profile to Modal's persistent volume
+uv run modal run modal/app.py::upload_profile
+```
+
+This uploads your authenticated browser profile to Modal's persistent volume,
+so deployed functions use your saved login session instead of a blank profile.
+
 **Run locally (CLI with parallel browsers):**
 ```bash
 uv run -m src.local.cli shop
@@ -118,12 +128,12 @@ See `agent_docs/modal.md` for detailed Modal rules and guidelines.
 
 **Deploy to Modal:**
 ```bash
-uv run modal deploy modal_app.py
+uv run modal deploy modal/app.py
 ```
 
 **Serve locally with hot-reload (for development):**
 ```bash
-uv run modal serve modal_app.py  # Ctrl+C to stop
+uv run modal serve modal/app.py  # Ctrl+C to stop
 ```
 
 **View deployed apps:**

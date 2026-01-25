@@ -628,6 +628,103 @@ def view_cart_remote_streaming():
 
 
 # =============================================================================
+# Profile Upload (Local -> Modal Volume)
+# =============================================================================
+
+
+@app.function(
+    image=modal.Image.debian_slim(python_version="3.11"),
+    volumes={"/session": session_volume},
+    timeout=300,
+)
+def _write_profile_to_volume(files: list[tuple[str, bytes]]):
+    """Write profile files to the Modal volume.
+
+    This function runs remotely on Modal to write the uploaded files
+    to the persistent session volume.
+
+    Args:
+        files: List of (relative_path, content) tuples to write.
+    """
+    import os
+    from pathlib import Path
+
+    profile_dir = Path("/session/profile")
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    for relative_path, content in files:
+        file_path = profile_dir / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(content)
+        print(f"  Wrote: {relative_path} ({len(content)} bytes)")
+
+    # Commit the volume to persist changes
+    session_volume.commit()
+    print(f"\n[Upload] Successfully wrote {len(files)} files to Modal volume")
+    return len(files)
+
+
+@app.local_entrypoint()
+def upload_profile():
+    """Upload local browser profile to Modal's persistent volume.
+
+    Run this after logging in locally to sync your authenticated profile
+    to Modal, so deployed functions can use your saved login session.
+
+    Usage:
+        1. First login locally: uv run -m src.local.cli login
+        2. Then upload to Modal: uv run modal run modal/app.py::upload_profile
+
+    This solves the CI/CD deployment issue where the image-embedded profile
+    is empty. The Modal volume persists independently of deployments.
+    """
+    from pathlib import Path
+
+    # Chrome lock files to skip (can't be copied while browser might be running)
+    lock_files = {
+        "SingletonLock",
+        "SingletonCookie",
+        "SingletonSocket",
+        "lockfile",
+        "parent.lock",
+    }
+
+    local_profile = Path("./superstore-profile")
+
+    if not local_profile.exists():
+        print("[Error] Local profile directory not found: ./superstore-profile")
+        print("        Run 'uv run -m src.local.cli login' first to create a profile.")
+        return
+
+    # Collect all files from the local profile
+    files_to_upload: list[tuple[str, bytes]] = []
+
+    for file_path in local_profile.rglob("*"):
+        if file_path.is_file():
+            # Skip lock files
+            if file_path.name in lock_files:
+                print(f"  Skipping lock file: {file_path.name}")
+                continue
+
+            relative_path = file_path.relative_to(local_profile)
+            content = file_path.read_bytes()
+            files_to_upload.append((str(relative_path), content))
+
+    if not files_to_upload:
+        print("[Warning] No files found in local profile directory.")
+        print("          Run 'uv run -m src.local.cli login' first to create a profile.")
+        return
+
+    print(f"[Upload] Uploading {len(files_to_upload)} files from ./superstore-profile to Modal volume...")
+
+    # Call the remote function to write files to the volume
+    num_written = _write_profile_to_volume.remote(files_to_upload)
+
+    print(f"\n[Success] Profile uploaded to Modal volume ({num_written} files)")
+    print("          Your Modal functions will now use this authenticated profile.")
+
+
+# =============================================================================
 # Chat UI Flask App
 # =============================================================================
 
