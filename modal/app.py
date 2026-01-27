@@ -630,10 +630,8 @@ def view_cart_remote_streaming():
 # =============================================================================
 # Profile Upload (Local -> Modal Volume)
 # =============================================================================
-
-
 @app.function(
-    image=modal.Image.debian_slim(python_version="3.11"),
+    image=chat_image,
     volumes={"/session": session_volume},
     timeout=300,
 )
@@ -646,7 +644,6 @@ def _write_profile_to_volume(files: list[tuple[str, bytes]]):
     Args:
         files: List of (relative_path, content) tuples to write.
     """
-    import os
     from pathlib import Path
 
     profile_dir = Path("/session/profile")
