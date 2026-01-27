@@ -21,13 +21,22 @@ superstore-use/
         local/               # Local CLI module
             __init__.py
             cli.py           # Entry point: uv run -m src.local.cli
+        eval/                # Evaluation harness module
+            __init__.py
+            cli.py           # Entry point: uv run -m src.eval.cli
+            config.py        # EvalConfig, EvalRun, LLMConfig models
+            harness.py       # EvalHarness runner, run_quick_eval()
+            results.py       # EvalResult, CartItem, RunMetrics
+            cart_checker.py  # Cart verification after runs
         prompts/             # Prompt templates (markdown)
             login.md
             add_item.md
+            add_item_concise.md  # Shorter prompt variant for testing
             checkout.md
             chat_system.md
     modal/app.py             # Single unified Modal deployment
     config.toml              # Configuration file
+    eval_example.json        # Example evaluation config
     agent_docs/              # Documentation for Modal deployment
     superstore-profile/      # Persisted browser state (cookies, login session)
 ```
@@ -38,6 +47,7 @@ superstore-use/
 |---------|---------|
 | `uv run -m src.local.cli login` | Local login to save browser profile |
 | `uv run -m src.local.cli shop` | Local shopping with parallel browser windows |
+| `uv run -m src.eval.cli run` | Run evaluation harness for browser agents |
 | `uv run modal run modal/app.py::upload_profile` | Upload local profile to Modal volume |
 | `uv run modal deploy modal/app.py` | Deploy unified Modal app (chat UI + automation) |
 
@@ -57,6 +67,8 @@ superstore-use/
 | `src/core/success.py` | Success indicators and detection from agent history |
 | `src/core/agent.py` | LangGraph chat agent with Modal tool wrappers |
 | `src/local/cli.py` | Local CLI with login and parallel shopping commands |
+| `src/eval/harness.py` | Evaluation harness for testing different LLMs/prompts |
+| `src/eval/cart_checker.py` | Cart verification after evaluation runs |
 | `modal/app.py` | Modal functions (login, add_item, upload_profile) + Chat UI Flask app |
 
 ## Tech Stack
@@ -160,3 +172,90 @@ uv run modal app --help
 **Dashboard:** https://modal.com/apps
 
 **Documentation:** https://modal.com/docs (or https://modal.com/llms-full.txt for LLM-friendly format)
+
+## Evaluation Harness
+
+The evaluation harness (`src/eval/`) allows testing browser agents with different LLMs, prompts, and configurations. It tracks timing, success rates, and verifies cart contents after each run.
+
+### Key Features
+
+- **Multiple LLMs**: Test with different models (GPT-4.1, Llama 70B, etc.)
+- **Custom Prompts**: Compare different prompt templates
+- **Timing Metrics**: Track duration per item, steps taken, total time
+- **Cart Verification**: Opens cart after test to verify what was actually added
+- **Temporary Profiles**: Each run uses an isolated copy of the browser profile
+- **Result Export**: JSON output for analysis and comparison
+
+### Quick Start
+
+```bash
+# Run a quick evaluation
+uv run -m src.eval.cli run --items "apples" "milk" --llm gpt-4.1
+
+# Run with visible browser (for debugging)
+uv run -m src.eval.cli run --items "bread" --headed --keep-profile
+
+# Run from config file for reproducible experiments
+uv run -m src.eval.cli run --config eval_example.json
+
+# List available LLM presets
+uv run -m src.eval.cli list-models
+
+# Generate example config file
+uv run -m src.eval.cli example-config > my_eval.json
+
+# View results from previous run
+uv run -m src.eval.cli view ./eval_results/eval_result.json
+
+# Compare multiple runs
+uv run -m src.eval.cli compare result1.json result2.json
+```
+
+### Evaluation Config Structure
+
+```json
+{
+  "name": "my_evaluation",
+  "runs": [
+    {
+      "name": "gpt4_test",
+      "items": ["apples", "milk", "bread"],
+      "llm": {
+        "model": "gpt-4.1",
+        "provider": "groq",
+        "temperature": 0.0
+      },
+      "browser": {
+        "headless": true,
+        "wait_between_actions": 2.0
+      },
+      "max_steps": 30
+    }
+  ],
+  "clear_cart_before_run": true,
+  "output_dir": "./eval_results"
+}
+```
+
+### Python API
+
+```python
+from src.eval import EvalHarness, EvalConfig, run_quick_eval
+
+# Quick evaluation
+result = await run_quick_eval(["apples", "milk"], llm_model="gpt-4.1")
+print(result.get_summary())
+
+# Full configuration
+config = EvalConfig.from_file("eval_config.json")
+harness = EvalHarness(config)
+session = await harness.run_all()
+```
+
+### Result Structure
+
+Each evaluation produces:
+- `EvalResult`: Overall run outcome with success rate
+- `ItemResult`: Per-item status, timing, and steps
+- `CartItem`: Items found in cart after verification
+- `RunMetrics`: Timing breakdown and averages
