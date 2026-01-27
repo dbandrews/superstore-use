@@ -1,6 +1,6 @@
 # superstore-use
 
-AI-powered grocery shopping agent for Real Canadian Superstore. Uses browser automation with Groq LLMs for intelligent shopping.
+Grocery shopping agent for Real Canadian Superstore. Uses browser automation with Groq LLMs for intelligent shopping.
 
 ## Quick Start (Local)
 
@@ -47,17 +47,12 @@ Opens parallel browser windows to add items to your cart.
 uv run modal setup
 ```
 
-### 2. Configure Security
+### 2. Configure App Naming
 
 **Change app name** in `config.toml`:
 ```toml
 [app]
-name = "my-unique-app-name-12345"  # Pick something random/unique
-```
-
-**Change web endpoint label** in `modal/app.py`:
-```python
-@modal.wsgi_app(label="my-secret-label-xyz")  # Line ~483
+name = "my-unique-app-name-12345" 
 ```
 
 ### 3. Create Modal Secrets
@@ -72,7 +67,7 @@ Go to [https://modal.com/secrets](https://modal.com/secrets) and create:
 - `SUPERSTORE_PASSWORD`: Your Superstore password
 
 **web-auth:**
-- `WEB_AUTH_TOKEN`: Random secret token (e.g., `openssl rand -hex 32`)
+- `WEB_AUTH_TOKEN`: Random secret token (e.g., run `openssl rand -hex 32` in your terminal) that will be required to access the web UI.
 
 **oxy-proxy** (optional, for proxy support):
 - `PROXY_SERVER`: Proxy server URL
@@ -92,8 +87,6 @@ Your web UI will be available at the URL shown in the output.
 https://your-workspace--your-app-name-web.modal.run?token=YOUR_WEB_AUTH_TOKEN
 ```
 
-Or set the `X-Auth-Token` header in API requests.
-
 ### 5. View Logs
 
 ```bash
@@ -104,7 +97,7 @@ uv run modal app logs superstore-agent
 
 ```
 superstore-use/
-  modal/              # Modal deployment (cloud)
+  modal/              # Modal deployment
     app.py            # Main Modal app
     templates/        # Web UI HTML
     static/           # CSS & JavaScript
@@ -120,12 +113,10 @@ superstore-use/
 
 ## Security
 
-**Important**: Your deployed web endpoint is accessible via a predictable URL. To prevent unauthorized access:
+**Important**: Your deployed web endpoint is accessible via a predictable URL. To prevent unauthorized access, you must set the WEB_AUTH_TOKEN secret in Modal.
 
-1. **Change the app name** in `config.toml` to something unique
-2. **Change the web endpoint label** in `modal/app.py`
-3. **Set WEB_AUTH_TOKEN** secret in Modal
-4. **Never commit** your auth token or share your endpoint URL publicly
+1. **Set WEB_AUTH_TOKEN** secret in Modal, keep this handy for accessing the web UI.
+2. **Never commit** your auth token or share your endpoint URL publicly
 
 Without these steps, anyone could potentially access your shopping cart.
 
