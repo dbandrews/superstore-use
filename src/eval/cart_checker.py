@@ -325,9 +325,14 @@ async def extract_cart_contents(
         # Already started or initialization error - continue
         pass
 
-    # Create a new page and navigate to cart
-    # browser.new_page(url) creates page and navigates in one call
-    page = await browser.new_page(cart_url)
+    # Create a new page without URL first
+    page = await browser.new_page()
+
+    # Navigate to cart URL and wait for full page load
+    await page.goto(cart_url)
+
+    # Wait for network to be idle to ensure localStorage is accessible
+    await asyncio.sleep(2)
 
     # Extract via API (only method)
     return await extract_cart_contents_api(
