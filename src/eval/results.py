@@ -14,6 +14,61 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class TokenUsage(BaseModel):
+    """Token usage tracking for LLM calls."""
+
+    input_tokens: int = Field(default=0, description="Total input tokens consumed")
+    output_tokens: int = Field(default=0, description="Total output tokens generated")
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens (input + output)."""
+        return self.input_tokens + self.output_tokens
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        """Add two TokenUsage instances together."""
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+        )
+
+
+class CostMetrics(BaseModel):
+    """Cost tracking for an evaluation run."""
+
+    token_usage: TokenUsage = Field(
+        default_factory=TokenUsage,
+        description="Token usage breakdown",
+    )
+    estimated_cost_usd: float | None = Field(
+        default=None,
+        description="Estimated cost in USD (if available from provider)",
+    )
+    cost_per_item: dict[str, float] = Field(
+        default_factory=dict,
+        description="Estimated cost per item in USD",
+    )
+    tokens_per_item: dict[str, TokenUsage] = Field(
+        default_factory=dict,
+        description="Token usage per item",
+    )
+
+    @property
+    def avg_cost_per_item(self) -> float | None:
+        """Average cost per item in USD."""
+        if not self.cost_per_item:
+            return None
+        return sum(self.cost_per_item.values()) / len(self.cost_per_item)
+
+    @property
+    def avg_tokens_per_item(self) -> int | None:
+        """Average total tokens per item."""
+        if not self.tokens_per_item:
+            return None
+        total = sum(t.total_tokens for t in self.tokens_per_item.values())
+        return total // len(self.tokens_per_item)
+
+
 class CartItem(BaseModel):
     """Represents an item found in the shopping cart."""
 
@@ -108,6 +163,14 @@ class ItemResult(BaseModel):
     matched_cart_item: CartItem | None = Field(
         default=None, description="Cart item that matched this request"
     )
+    token_usage: TokenUsage = Field(
+        default_factory=TokenUsage,
+        description="Token usage for this item's agent run",
+    )
+    estimated_cost_usd: float | None = Field(
+        default=None,
+        description="Estimated cost in USD for this item's agent run",
+    )
 
 
 class EvalResult(BaseModel):
@@ -140,6 +203,12 @@ class EvalResult(BaseModel):
 
     # Timing metrics
     metrics: RunMetrics = Field(default_factory=lambda: RunMetrics(start_time=datetime.now()))
+
+    # Cost metrics
+    cost_metrics: CostMetrics = Field(
+        default_factory=CostMetrics,
+        description="Token usage and cost tracking",
+    )
 
     # Metadata
     timestamp: datetime = Field(default_factory=datetime.now)
@@ -201,6 +270,18 @@ class EvalResult(BaseModel):
             if self.metrics.avg_item_duration:
                 lines.append(f"Avg per Item: {self.metrics.avg_item_duration:.1f}s")
 
+        # Cost metrics
+        if self.cost_metrics.token_usage.total_tokens > 0:
+            lines.append("")
+            lines.append("Token Usage:")
+            lines.append(f"  Input: {self.cost_metrics.token_usage.input_tokens:,}")
+            lines.append(f"  Output: {self.cost_metrics.token_usage.output_tokens:,}")
+            lines.append(f"  Total: {self.cost_metrics.token_usage.total_tokens:,}")
+            if self.cost_metrics.avg_tokens_per_item:
+                lines.append(f"  Avg per Item: {self.cost_metrics.avg_tokens_per_item:,}")
+            if self.cost_metrics.estimated_cost_usd is not None:
+                lines.append(f"  Estimated Cost: ${self.cost_metrics.estimated_cost_usd:.4f}")
+
         return "\n".join(lines)
 
     def to_file(self, path: str | Path) -> None:
@@ -259,6 +340,20 @@ class EvalSession(BaseModel):
             return 0.0
         return sum(r.success_rate for r in self.results) / len(self.results)
 
+    @property
+    def total_token_usage(self) -> TokenUsage:
+        """Total token usage across all runs."""
+        total = TokenUsage()
+        for result in self.results:
+            total = total + result.cost_metrics.token_usage
+        return total
+
+    @property
+    def total_estimated_cost_usd(self) -> float | None:
+        """Total estimated cost across all runs."""
+        costs = [r.cost_metrics.estimated_cost_usd for r in self.results if r.cost_metrics.estimated_cost_usd is not None]
+        return sum(costs) if costs else None
+
     def get_summary(self) -> str:
         """Get a summary of the entire session."""
         lines = [
@@ -269,11 +364,25 @@ class EvalSession(BaseModel):
         ]
 
         for result in self.results:
-            lines.append(f"  [{result.status.upper()}] {result.run_name}: {result.success_rate:.1%}")
+            tokens_str = ""
+            if result.cost_metrics.token_usage.total_tokens > 0:
+                tokens_str = f" ({result.cost_metrics.token_usage.total_tokens:,} tokens)"
+            lines.append(f"  [{result.status.upper()}] {result.run_name}: {result.success_rate:.1%}{tokens_str}")
 
         if self.total_duration_seconds:
             lines.append("")
             lines.append(f"Total Duration: {self.total_duration_seconds:.1f}s")
+
+        # Add aggregate token usage
+        total_usage = self.total_token_usage
+        if total_usage.total_tokens > 0:
+            lines.append("")
+            lines.append("Total Token Usage:")
+            lines.append(f"  Input: {total_usage.input_tokens:,}")
+            lines.append(f"  Output: {total_usage.output_tokens:,}")
+            lines.append(f"  Total: {total_usage.total_tokens:,}")
+            if self.total_estimated_cost_usd is not None:
+                lines.append(f"  Estimated Cost: ${self.total_estimated_cost_usd:.4f}")
 
         return "\n".join(lines)
 

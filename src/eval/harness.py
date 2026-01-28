@@ -19,17 +19,19 @@ from browser_use import Agent, Browser
 from src.core.config import load_config
 from src.core.success import detect_success_from_history
 from src.eval.cart_checker import (
-    clear_cart,
     extract_cart_contents,
+    judge_cart_contents,
     match_cart_to_requested,
 )
-from src.eval.config import EvalConfig, EvalRun, LLMConfig
+from src.eval.config import EvalConfig, EvalRun, JudgeConfig, LLMConfig
 from src.eval.results import (
     CartItem,
+    CostMetrics,
     EvalResult,
     EvalSession,
     ItemResult,
     RunMetrics,
+    TokenUsage,
 )
 
 
@@ -42,6 +44,7 @@ def get_llm_instance(llm_config: LLMConfig):
     Returns:
         LLM instance compatible with browser-use Agent
     """
+    # Use browser-use's model wrappers for compatibility
     if llm_config.provider == "groq":
         from browser_use import ChatGroq
         return ChatGroq(
@@ -49,13 +52,13 @@ def get_llm_instance(llm_config: LLMConfig):
             temperature=llm_config.temperature,
         )
     elif llm_config.provider == "openai":
-        from langchain_openai import ChatOpenAI
+        from browser_use import ChatOpenAI
         return ChatOpenAI(
             model=llm_config.model,
             temperature=llm_config.temperature,
         )
     elif llm_config.provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
+        from browser_use import ChatAnthropic
         return ChatAnthropic(
             model=llm_config.model,
             temperature=llm_config.temperature,
@@ -64,42 +67,21 @@ def get_llm_instance(llm_config: LLMConfig):
         raise ValueError(f"Unknown LLM provider: {llm_config.provider}")
 
 
-def copy_profile_to_temp(
-    source_profile: Path,
-    prefix: str = "eval-profile",
-) -> Path:
-    """Copy browser profile to a temporary directory.
+def create_temp_profile(prefix: str = "eval-profile") -> Path:
+    """Create a blank temporary browser profile directory.
+
+    Each eval run gets a fresh, isolated browser profile with no
+    pre-existing state. Items can be added to cart without authentication.
 
     Args:
-        source_profile: Path to the source profile directory
         prefix: Prefix for the temp directory name
 
     Returns:
         Path to the temporary profile directory
     """
-    # Chrome lock files to skip during copy
-    lock_files = {
-        "SingletonLock",
-        "SingletonCookie",
-        "SingletonSocket",
-        "lockfile",
-        "parent.lock",
-    }
-
-    def ignore_lock_files(directory: str, files: list[str]) -> list[str]:
-        return [f for f in files if f in lock_files]
-
     temp_dir = tempfile.mkdtemp(prefix=f"{prefix}-")
     temp_profile = Path(temp_dir) / "profile"
-
-    if source_profile.exists():
-        shutil.copytree(
-            source_profile,
-            temp_profile,
-            ignore=ignore_lock_files,
-            dirs_exist_ok=True,
-        )
-
+    temp_profile.mkdir(parents=True, exist_ok=True)
     return temp_profile
 
 
@@ -226,6 +208,8 @@ class EvalHarness:
         status = "uncertain"
         success_evidence = None
         error_message = None
+        token_usage = TokenUsage()
+        estimated_cost_usd = None
 
         try:
             # Get and format prompt
@@ -235,12 +219,13 @@ class EvalHarness:
                 base_url=self.config.base_url,
             )
 
-            # Create agent
+            # Create agent with cost tracking enabled
             agent = Agent(
                 task=task,
                 llm=llm,
                 browser_session=browser,
                 use_vision=run.llm.use_vision,
+                calculate_cost=True,
             )
 
             # Track steps via callback
@@ -251,8 +236,9 @@ class EvalHarness:
                 self._log(f"  Step {step_count[0]}: {item}")
 
             # Run with timeout
+            history = None
             try:
-                await asyncio.wait_for(
+                history = await asyncio.wait_for(
                     agent.run(max_steps=run.max_steps, on_step_end=on_step_end),
                     timeout=run.timeout_seconds,
                 )
@@ -261,6 +247,18 @@ class EvalHarness:
                 error_message = f"Timed out after {run.timeout_seconds}s"
 
             steps_taken = step_count[0]
+
+            # Extract token usage from history
+            # browser-use UsageSummary uses: total_prompt_tokens, total_completion_tokens, total_cost
+            if history and hasattr(history, "usage") and history.usage:
+                usage = history.usage
+                token_usage = TokenUsage(
+                    input_tokens=getattr(usage, "total_prompt_tokens", 0) or 0,
+                    output_tokens=getattr(usage, "total_completion_tokens", 0) or 0,
+                )
+                cost = getattr(usage, "total_cost", None)
+                if cost is not None and cost > 0:
+                    estimated_cost_usd = cost
 
             # Check success if not timed out
             if status != "timeout":
@@ -284,6 +282,8 @@ class EvalHarness:
             steps_taken=steps_taken,
             success_evidence=success_evidence,
             error_message=error_message,
+            token_usage=token_usage,
+            estimated_cost_usd=estimated_cost_usd,
         )
 
     async def run_single(self, run: EvalRun) -> EvalResult:
@@ -309,103 +309,159 @@ class EvalHarness:
                 "prompt_name": run.prompt.name,
                 "max_steps": run.max_steps,
                 "headless": run.browser.headless,
+                "judge_model": run.judge.model,
+                "judge_provider": run.judge.provider,
+                "judge_enabled": run.judge.enabled,
             },
             metrics=RunMetrics(start_time=datetime.now()),
         )
 
-        # Create temp profile from source
-        source_profile = Path(self.config.source_profile_dir)
-        temp_profile = copy_profile_to_temp(source_profile)
+        # Create blank temp profile (no authentication needed for cart)
+        temp_profile = create_temp_profile()
         result.profile_dir = str(temp_profile)
         self._log(f"Using temp profile: {temp_profile}")
 
-        browser = None
         try:
-            # Create browser with temp profile
-            browser = self._create_browser(run, str(temp_profile))
-
             # Get LLM instance
             llm = get_llm_instance(run.llm)
 
-            # Optionally clear cart before starting
-            if self.config.clear_cart_before_run:
-                self._log("Clearing cart before run...")
-                await clear_cart(
-                    browser=browser,
-                    cart_url=self.config.cart_url,
-                    llm=llm,
-                    use_vision=run.llm.use_vision,
-                )
-
-            # Run agent for each item
+            # Run agent for each item (new browser per item for isolation)
             for i, item in enumerate(run.items, 1):
                 self._log(f"Adding item {i}/{len(run.items)}: {item}")
 
-                item_result = await self._run_single_item(
-                    item=item,
-                    run=run,
-                    browser=browser,
-                    llm=llm,
-                )
+                # Create fresh browser for this item
+                item_browser = self._create_browser(run, str(temp_profile))
+                try:
+                    item_result = await self._run_single_item(
+                        item=item,
+                        run=run,
+                        browser=item_browser,
+                        llm=llm,
+                    )
+                finally:
+                    # Wait for profile to sync before killing browser
+                    await asyncio.sleep(2)
+                    try:
+                        await item_browser.kill()
+                    except Exception:
+                        pass
+                    # Additional delay for disk sync
+                    await asyncio.sleep(1)
 
                 result.item_results.append(item_result)
                 result.metrics.item_durations[item] = item_result.duration_seconds
                 result.metrics.steps_per_item[item] = item_result.steps_taken
 
-                status_icon = "[+]" if item_result.status == "success" else "[-]"
-                self._log(f"  {status_icon} {item}: {item_result.status} ({item_result.duration_seconds:.1f}s)")
+                # Track cost metrics per item
+                result.cost_metrics.tokens_per_item[item] = item_result.token_usage
+                result.cost_metrics.token_usage = result.cost_metrics.token_usage + item_result.token_usage
+                if item_result.estimated_cost_usd is not None:
+                    result.cost_metrics.cost_per_item[item] = item_result.estimated_cost_usd
+                    if result.cost_metrics.estimated_cost_usd is None:
+                        result.cost_metrics.estimated_cost_usd = 0.0
+                    result.cost_metrics.estimated_cost_usd += item_result.estimated_cost_usd
 
-            # Verify cart contents
+                status_icon = "[+]" if item_result.status == "success" else "[-]"
+                tokens_str = f", {item_result.token_usage.total_tokens} tokens" if item_result.token_usage.total_tokens > 0 else ""
+                cost_str = f", ${item_result.estimated_cost_usd:.4f}" if item_result.estimated_cost_usd else ""
+                self._log(f"  {status_icon} {item}: {item_result.status} ({item_result.duration_seconds:.1f}s{tokens_str}{cost_str})")
+
+            # Verify cart contents with fresh browser
             self._log("Verifying cart contents...")
+            # Wait for profile data to fully sync to disk
+            await asyncio.sleep(2)
+
+            cart_browser = self._create_browser(run, str(temp_profile))
             cart_items, raw_content, cart_duration = await extract_cart_contents(
-                browser=browser,
+                browser=cart_browser,
                 cart_url=self.config.cart_url,
                 llm=llm,
                 use_vision=run.llm.use_vision,
+                use_deterministic=run.browser.use_deterministic_extraction,
             )
+
+            # Clean up cart browser
+            try:
+                await cart_browser.kill()
+            except Exception:
+                pass
 
             result.cart_items = cart_items
             result.cart_raw_content = raw_content
             result.cart_verified = True
             result.metrics.cart_check_duration_seconds = cart_duration
 
-            # Match cart items to requested items
-            matches = match_cart_to_requested(cart_items, run.items)
-            for item_result in result.item_results:
-                matched = matches.get(item_result.item)
-                if matched:
-                    item_result.matched_cart_item = matched
-                    # Upgrade uncertain to success if found in cart
-                    if item_result.status == "uncertain":
-                        item_result.status = "success"
-                        item_result.success_evidence = f"Found in cart: {matched.name}"
-                elif item_result.status == "success":
-                    # Downgrade to uncertain if not found in cart
-                    item_result.status = "uncertain"
-                    item_result.success_evidence = None
-
             self._log(f"Cart contains {len(cart_items)} items")
+
+            # Use LLM judge to evaluate cart contents against requested items
+            if run.judge.enabled:
+                self._log(f"Judging cart contents with LLM ({run.judge.get_display_name()})...")
+                judge_llm_config = {
+                    "provider": run.judge.provider,
+                    "model": run.judge.model,
+                    "temperature": run.judge.temperature,
+                }
+
+                # Get custom prompt template if configured
+                custom_prompt = run.judge.get_prompt_template()
+
+                judgment = await judge_cart_contents(
+                    requested_items=run.items,
+                    cart_items=cart_items,
+                    llm_config=judge_llm_config,
+                    custom_prompt=custom_prompt,
+                )
+
+                self._log(f"LLM Judge: {judgment.summary}")
+            else:
+                self._log("LLM judge disabled, skipping judgment")
+                # Create a placeholder judgment when disabled
+                from src.eval.cart_checker import CartJudgment
+                judgment = CartJudgment(summary="LLM judge disabled")
+
+            # Update item results based on LLM judgment (only if judge is enabled)
+            if run.judge.enabled:
+                for item_judgment in judgment.item_judgments:
+                    # Find the matching item result
+                    for item_result in result.item_results:
+                        if item_result.item == item_judgment.requested_item:
+                            if item_judgment.found and item_judgment.correct_quantity:
+                                item_result.status = "success"
+                                item_result.success_evidence = f"Found: {item_judgment.matched_cart_item} (qty: {item_judgment.matched_quantity}) - {item_judgment.reasoning}"
+                                # Create matched cart item
+                                if item_judgment.matched_cart_item:
+                                    item_result.matched_cart_item = CartItem(
+                                        name=item_judgment.matched_cart_item,
+                                        quantity=item_judgment.matched_quantity or 1,
+                                    )
+                            elif item_judgment.found:
+                                # Found but wrong quantity
+                                item_result.status = "failed"
+                                item_result.success_evidence = None
+                                item_result.error_message = f"Mismatch: qty: wanted {item_judgment.requested_quantity}, got {item_judgment.matched_quantity} - {item_judgment.reasoning}"
+                            else:
+                                # Not found
+                                item_result.status = "failed"
+                                item_result.success_evidence = None
+                                item_result.error_message = f"Not found in cart - {item_judgment.reasoning}"
+                            break
 
         except Exception as e:
             result.error = str(e)
             self._log(f"Run error: {e}")
 
-        finally:
-            # Clean up browser
-            if browser:
-                try:
-                    await browser.kill()
-                except Exception:
-                    pass
-
-            # Note: We don't clean up the temp profile here so it can be inspected
-            # The CLI will clean it up after the run if needed
-
         # Finalize metrics and calculate success rate
         result.metrics.finalize()
         result.calculate_success_rate()
 
-        self._log(f"Run complete: {result.status} ({result.success_rate:.0%})")
+        # Log final summary including token usage and cost
+        tokens_summary = ""
+        if result.cost_metrics.token_usage.total_tokens > 0:
+            tokens_summary = f", {result.cost_metrics.token_usage.total_tokens:,} tokens"
+        cost_summary = ""
+        if result.cost_metrics.estimated_cost_usd is not None:
+            cost_summary = f", ${result.cost_metrics.estimated_cost_usd:.4f}"
+        self._log(f"Run complete: {result.status} ({result.success_rate:.0%}{tokens_summary}{cost_summary})")
         return result
 
     async def run_all(self) -> EvalSession:
@@ -445,7 +501,6 @@ async def run_quick_eval(
     items: list[str],
     llm_model: str = "openai/gpt-oss-120b",
     headless: bool = True,
-    clear_cart: bool = True,
 ) -> EvalResult:
     """Run a quick evaluation with minimal configuration.
 
@@ -453,7 +508,6 @@ async def run_quick_eval(
         items: List of items to add to cart
         llm_model: LLM model to use
         headless: Run browser in headless mode
-        clear_cart: Clear cart before running
 
     Returns:
         EvalResult with outcome details
@@ -461,7 +515,6 @@ async def run_quick_eval(
     from src.eval.config import BrowserConfig
 
     config = EvalConfig.quick(items=items, llm_model=llm_model)
-    config.clear_cart_before_run = clear_cart
 
     # Update browser config
     config.runs[0].browser = BrowserConfig(headless=headless)

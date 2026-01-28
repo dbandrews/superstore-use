@@ -1,0 +1,25 @@
+defaults:
+  - llm: gpt4
+  - browser: headless
+  - prompt: default
+  - judge: default
+  - _self_
+
+name: eval
+items:
+  - 6 x ambrosia apples
+  - 1 liter 2% milk organic
+  - chicken breast club pack
+  - kettle chips honey dijon
+  - 1 loaf of promise gluten free bread
+
+base_url: https://www.realcanadiansuperstore.ca/en
+cart_url: https://www.realcanadiansuperstore.ca/en/cartReview
+output_dir: ./eval_results
+
+max_steps: 30
+timeout_seconds: 300.0
+
+# Runtime options (not part of EvalConfig, used by CLI)
+dry_run: false
+keep_profile: false

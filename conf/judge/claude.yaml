@@ -1,0 +1,5 @@
+model: claude-sonnet-4-20250514
+provider: anthropic
+temperature: 0.0
+prompt_template: null
+enabled: true

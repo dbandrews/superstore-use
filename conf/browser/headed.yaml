@@ -1,0 +1,8 @@
+headless: false
+use_stealth: false
+wait_between_actions: 2.0
+min_wait_page_load: 1.5
+wait_for_network_idle: 1.5
+window_width: 1920
+window_height: 1080
+use_deterministic_extraction: true

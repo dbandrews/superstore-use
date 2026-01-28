@@ -17,11 +17,12 @@ Create `.env` file:
 
 ```bash
 GROQ_API_KEY=your_groq_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here  # For eval harness (optional)
 SUPERSTORE_USER=your_email@example.com
 SUPERSTORE_PASSWORD=your_password
 ```
 
-Get a Groq API key, add some money to your account at [https://console.groq.com](https://console.groq.com)
+Get API keys from [Groq](https://console.groq.com) and/or [OpenAI](https://platform.openai.com)
 
 ### 3. Login (First Time)
 
@@ -93,6 +94,44 @@ https://your-workspace--your-app-name-web.modal.run?token=YOUR_WEB_AUTH_TOKEN
 uv run modal app logs superstore-agent
 ```
 
+## Evaluation Harness
+
+Test browser agents with different LLMs, prompts, and configurations. Runs use isolated browser profiles (no login required) and verify results via LLM-based cart judgment.
+
+### Run Evaluations
+
+```bash
+# Run with default config
+uv run -m src.eval.cli
+
+# Custom items
+uv run -m src.eval.cli 'items=[bread,eggs,butter]'
+
+# Use different LLM
+uv run -m src.eval.cli llm=llama_70b
+
+# Visible browser (for debugging)
+uv run -m src.eval.cli browser=headed
+
+# Sweep across LLMs
+uv run -m src.eval.cli --multirun llm=gpt4,llama_70b
+```
+
+### Configuration
+
+Configs are in `conf/` directory (Hydra-based):
+- `conf/llm/` - LLM configs (gpt4, llama_70b, etc.)
+- `conf/browser/` - Browser configs (headless, headed)
+- `conf/prompt/` - Prompt templates
+
+### What It Does
+
+1. Creates a fresh temporary browser profile for each run
+2. Adds each requested item to cart (separate browser per item)
+3. Verifies cart contents after all items are added
+4. Uses LLM judge to evaluate if items match requests (semantic matching + quantity check)
+5. Outputs results with timing metrics and success rates
+
 ## Architecture
 
 ```
@@ -104,7 +143,9 @@ superstore-use/
   src/
     core/             # Shared utilities
     local/            # Local CLI
+    eval/             # Evaluation harness
     prompts/          # AI prompts
+  conf/               # Hydra config (YAML)
   config.toml         # Configuration
 ```
 
@@ -127,6 +168,12 @@ Without these steps, anyone could potentially access your shopping cart.
 uv run -m src.local.cli login          # Save login session
 uv run -m src.local.cli login --headed # Login with visible browser
 uv run -m src.local.cli shop           # Interactive shopping
+
+# Evaluation
+uv run -m src.eval.cli                 # Run eval with default config
+uv run -m src.eval.cli llm=llama_70b   # Use different LLM
+uv run -m src.eval.cli browser=headed  # Visible browser for debugging
+uv run -m src.eval.cli --cfg job       # View resolved config
 
 # Modal
 uv run modal deploy modal/app.py     # Deploy to cloud

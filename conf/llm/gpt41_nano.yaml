@@ -1,0 +1,4 @@
+model: gpt-4.1-nano
+provider: openai
+temperature: 0.0
+use_vision: false

@@ -1,16 +1,39 @@
 """CLI for running browser agent evaluations.
 
+This CLI uses Hydra for configuration management. The main `run` command
+is powered by Hydra, while utility commands (list-models, view, compare)
+use standard Python.
+
 Usage:
-    uv run -m src.eval.cli run --items "apples" "milk" --llm gpt-4.1
-    uv run -m src.eval.cli run --config eval_config.json
-    uv run -m src.eval.cli run --items "bread" --headed --no-clear-cart
+    # Run evaluation with default config
+    uv run -m src.eval.cli
+
+    # Override LLM
+    uv run -m src.eval.cli llm=llama_70b
+
+    # Override items
+    uv run -m src.eval.cli 'items=[bread,eggs,butter]'
+
+    # Use headed browser
+    uv run -m src.eval.cli browser=headed
+
+    # Multirun across LLMs
+    uv run -m src.eval.cli --multirun llm=gpt4,llama_70b
+
+    # Use experiment preset
+    uv run -m src.eval.cli +experiment=quick_test
+
+    # View resolved config without running
+    uv run -m src.eval.cli --cfg job
+
+    # Utility commands (not Hydra-powered)
     uv run -m src.eval.cli list-models
-    uv run -m src.eval.cli example-config > my_eval.json
+    uv run -m src.eval.cli view ./eval_results/result.json
+    uv run -m src.eval.cli compare result1.json result2.json
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import sys
@@ -18,169 +41,121 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.eval.config import (
-    EvalConfig,
-    EvalRun,
-    LLMConfig,
-    LLM_PRESETS,
-    BrowserConfig,
-    PromptConfig,
-)
-from src.eval.harness import EvalHarness, cleanup_temp_profile
-from src.eval.results import EvalResult
-
 load_dotenv()
 
 
-def run_eval(args) -> None:
-    """Run an evaluation based on CLI arguments."""
+def run_eval_hydra() -> None:
+    """Run evaluation using Hydra configuration."""
+    import hydra
+    from hydra.core.hydra_config import HydraConfig
+    from omegaconf import DictConfig, OmegaConf
 
-    if args.config:
-        # Load from config file
-        config = EvalConfig.from_file(args.config)
-        print(f"Loaded config from: {args.config}")
-    else:
-        # Build config from CLI args
-        if not args.items:
-            print("Error: --items required when not using --config", file=sys.stderr)
-            sys.exit(1)
+    # Import to register configs before Hydra runs
+    from src.eval.hydra_config import convert_to_pydantic
+    from src.eval.harness import EvalHarness, cleanup_temp_profile
 
-        # Build LLM config
-        if args.llm in LLM_PRESETS:
-            llm_config = LLM_PRESETS[args.llm].model_copy()
+    @hydra.main(version_base=None, config_path="../../conf", config_name="config")
+    def hydra_main(cfg: DictConfig) -> None:
+        """Hydra entry point for running evaluations."""
+        # Convert Hydra config to Pydantic models
+        config = convert_to_pydantic(cfg)
+
+        # Get Hydra output directory for saving results
+        hydra_output_dir = Path(HydraConfig.get().runtime.output_dir)
+
+        # Print config summary
+        print("\n" + "=" * 60)
+        print("EVALUATION CONFIGURATION")
+        print("=" * 60)
+        print(f"Name: {config.name}")
+        print(f"Runs: {len(config.runs)}")
+        print(f"Output: {hydra_output_dir}")
+
+        for i, run in enumerate(config.runs, 1):
+            print(f"\nRun {i}: {run.name}")
+            print(f"  Items: {run.items}")
+            print(f"  LLM: {run.llm.model} ({run.llm.provider})")
+            print(f"  Headless: {run.browser.headless}")
+            print(f"  Max steps: {run.max_steps}")
+
+        print("=" * 60 + "\n")
+
+        # Check for dry run via Hydra override
+        if OmegaConf.select(cfg, "dry_run", default=False):
+            print("Dry run - exiting without executing")
+            return
+
+        # Run the evaluation
+        harness = EvalHarness(config)
+
+        if len(config.runs) == 1:
+            result = asyncio.run(harness.run_single(config.runs[0]))
+            print("\n" + result.get_summary())
+
+            # Save result to Hydra output directory
+            result_path = hydra_output_dir / "eval_result.json"
+            result.to_file(result_path)
+            print(f"\nResult saved to: {result_path}")
+
+            # Clean up temp profile unless keep_profile is set
+            keep_profile = OmegaConf.select(cfg, "keep_profile", default=False)
+            if not keep_profile and result.profile_dir:
+                cleanup_temp_profile(Path(result.profile_dir))
+                print("Cleaned up temp profile")
+            elif result.profile_dir:
+                print(f"Temp profile kept at: {result.profile_dir}")
         else:
-            llm_config = LLMConfig(model=args.llm)
+            session = asyncio.run(harness.run_all())
+            print("\n" + session.get_summary())
 
-        if args.temperature is not None:
-            llm_config.temperature = args.temperature
-        if args.vision:
-            llm_config.use_vision = True
+            # Save session to Hydra output directory
+            session_path = hydra_output_dir / "session.json"
+            session.to_file(session_path)
+            print(f"\nSession saved to: {session_path}")
 
-        # Build browser config
-        browser_config = BrowserConfig(
-            headless=not args.headed,
-            use_stealth=args.stealth,
-            wait_between_actions=args.wait_between_actions,
-            min_wait_page_load=args.min_wait_page_load,
-        )
+    # Run Hydra
+    hydra_main()
 
-        # Build prompt config
-        prompt_config = PromptConfig(
-            name=args.prompt_name or "cli",
-            template_path=args.prompt_file,
-        )
 
-        # Create run
-        run = EvalRun(
-            name=args.name or "cli_eval",
-            items=args.items,
-            llm=llm_config,
-            browser=browser_config,
-            prompt=prompt_config,
-            max_steps=args.max_steps,
-            timeout_seconds=args.timeout,
-        )
+def list_models() -> None:
+    """List available LLM model presets (from YAML config files)."""
+    conf_dir = Path(__file__).parent.parent.parent / "conf" / "llm"
 
-        config = EvalConfig(
-            name=args.name or "cli_eval",
-            runs=[run],
-            output_dir=args.output_dir,
-            source_profile_dir=args.profile_dir,
-            clear_cart_before_run=not args.no_clear_cart,
-        )
+    print("\nAvailable LLM Configs:")
+    print("-" * 50)
 
-    # Print config summary
-    print("\n" + "=" * 60)
-    print("EVALUATION CONFIGURATION")
-    print("=" * 60)
-    print(f"Name: {config.name}")
-    print(f"Runs: {len(config.runs)}")
-    print(f"Output: {config.output_dir}")
-    print(f"Clear cart: {config.clear_cart_before_run}")
-
-    for i, run in enumerate(config.runs, 1):
-        print(f"\nRun {i}: {run.name}")
-        print(f"  Items: {run.items}")
-        print(f"  LLM: {run.llm.model} ({run.llm.provider})")
-        print(f"  Headless: {run.browser.headless}")
-        print(f"  Max steps: {run.max_steps}")
-
-    print("=" * 60 + "\n")
-
-    if args.dry_run:
-        print("Dry run - exiting without executing")
-        return
-
-    # Run the evaluation
-    harness = EvalHarness(config)
-
-    if len(config.runs) == 1:
-        result = asyncio.run(harness.run_single(config.runs[0]))
-        print("\n" + result.get_summary())
-
-        # Clean up temp profile unless --keep-profile
-        if not args.keep_profile and result.profile_dir:
-            cleanup_temp_profile(Path(result.profile_dir))
-            print(f"\nCleaned up temp profile")
-        elif result.profile_dir:
-            print(f"\nTemp profile kept at: {result.profile_dir}")
+    if conf_dir.exists():
+        for yaml_file in sorted(conf_dir.glob("*.yaml")):
+            name = yaml_file.stem
+            # Read and parse YAML to show model details
+            try:
+                import yaml
+                with open(yaml_file) as f:
+                    config = yaml.safe_load(f)
+                model = config.get("model", "unknown")
+                provider = config.get("provider", "unknown")
+                print(f"  {name:20} -> {model} ({provider})")
+            except Exception:
+                print(f"  {name:20} -> (error reading config)")
     else:
-        session = asyncio.run(harness.run_all())
-        print("\n" + session.get_summary())
+        print("  (no LLM configs found)")
 
-        # Clean up temp profiles
-        if not args.keep_profile:
-            for result in session.results:
-                if result.profile_dir:
-                    cleanup_temp_profile(Path(result.profile_dir))
+    print("-" * 50)
+    print("\nUsage: uv run -m src.eval.cli llm=<name>")
+    print("Example: uv run -m src.eval.cli llm=llama_70b")
 
 
-def list_models(args) -> None:
-    """List available LLM model presets."""
-    print("\nAvailable LLM Presets:")
-    print("-" * 40)
-    for name, config in LLM_PRESETS.items():
-        print(f"  {name:20} -> {config.model} ({config.provider})")
-    print("-" * 40)
-    print("\nYou can also specify any model name directly with --llm")
-
-
-def example_config(args) -> None:
-    """Print an example configuration file."""
-    example = EvalConfig(
-        name="example_eval",
-        runs=[
-            EvalRun(
-                name="gpt4_basic",
-                items=["apples", "milk", "bread"],
-                llm=LLMConfig(model="gpt-4.1", provider="groq"),
-                browser=BrowserConfig(headless=True),
-                max_steps=30,
-            ),
-            EvalRun(
-                name="llama_basic",
-                items=["apples", "milk", "bread"],
-                llm=LLMConfig(model="llama-3.3-70b-versatile", provider="groq"),
-                browser=BrowserConfig(headless=True),
-                max_steps=30,
-            ),
-        ],
-        output_dir="./eval_results",
-        clear_cart_before_run=True,
-    )
-    print(json.dumps(example.model_dump(), indent=2))
-
-
-def view_results(args) -> None:
+def view_results(result_file: str) -> None:
     """View results from a previous evaluation run."""
-    result_path = Path(args.result_file)
+    from src.eval.results import EvalResult, EvalSession
+
+    result_path = Path(result_file)
 
     if not result_path.exists():
         print(f"Error: Result file not found: {result_path}", file=sys.stderr)
         sys.exit(1)
 
     if result_path.name == "session.json":
-        from src.eval.results import EvalSession
         with open(result_path) as f:
             data = json.load(f)
         session = EvalSession.model_validate(data)
@@ -190,201 +165,213 @@ def view_results(args) -> None:
         print(result.get_summary())
 
 
-def compare_results(args) -> None:
+def compare_results(result_files: list[str]) -> None:
     """Compare results from multiple evaluation runs."""
+    from src.eval.results import EvalResult
+
     results = []
-    for path in args.result_files:
+    for path in result_files:
         result = EvalResult.from_file(path)
-        results.append(result)
+        results.append((path, result))
 
-    print("\n" + "=" * 60)
-    print("COMPARISON")
-    print("=" * 60)
-    print(f"{'Run Name':<30} {'Status':<10} {'Success':<10} {'Duration':<10}")
-    print("-" * 60)
+    print("\n" + "=" * 90)
+    print("COMPARISON SUMMARY")
+    print("=" * 90)
+    print(f"{'Run Name':<25} {'LLM':<20} {'Status':<10} {'Success':<10} {'Tokens':<12} {'Cost':<10} {'Duration':<10}")
+    print("-" * 90)
 
-    for result in results:
+    for path, result in results:
         duration = f"{result.metrics.total_duration_seconds:.1f}s" if result.metrics.total_duration_seconds else "N/A"
-        print(f"{result.run_name:<30} {result.status:<10} {result.success_rate:.0%}       {duration}")
+        llm = result.config_summary.get("llm_model", "unknown")[:18]
+        tokens = f"{result.cost_metrics.token_usage.total_tokens:,}" if result.cost_metrics.token_usage.total_tokens > 0 else "N/A"
+        cost = f"${result.cost_metrics.estimated_cost_usd:.4f}" if result.cost_metrics.estimated_cost_usd else "N/A"
+        print(f"{result.run_name:<25} {llm:<20} {result.status:<10} {result.success_rate:.0%}       {tokens:<12} {cost:<10} {duration}")
 
-    print("=" * 60)
+    print("=" * 90)
 
-    # Show item-level comparison
-    print("\nPer-Item Results:")
+    # Show per-item comparison with costs
+    print("\nPer-Item Breakdown:")
     all_items = set()
-    for result in results:
+    for _, result in results:
         all_items.update(result.items_requested)
 
     for item in sorted(all_items):
         print(f"\n  {item}:")
-        for result in results:
+        for path, result in results:
             item_result = next((r for r in result.item_results if r.item == item), None)
             if item_result:
-                print(f"    {result.run_name}: {item_result.status} ({item_result.duration_seconds:.1f}s)")
+                tokens_str = f", {item_result.token_usage.total_tokens:,} tokens" if item_result.token_usage.total_tokens > 0 else ""
+                cost_str = f", ${item_result.estimated_cost_usd:.4f}" if item_result.estimated_cost_usd else ""
+                llm = result.config_summary.get("llm_model", "")[:15]
+                print(f"    [{llm}] {item_result.status} ({item_result.duration_seconds:.1f}s{tokens_str}{cost_str})")
             else:
                 print(f"    {result.run_name}: (not tested)")
 
+    # Show cart verification summary
+    print("\n" + "-" * 90)
+    print("Cart Verification:")
+    for path, result in results:
+        llm = result.config_summary.get("llm_model", "unknown")[:20]
+        judge_enabled = result.config_summary.get("judge_enabled", True)
+        print(f"\n  [{llm}]")
+        if result.cart_items:
+            for cart_item in result.cart_items:
+                print(f"    - {cart_item.quantity}x {cart_item.name}" + (f" ({cart_item.price})" if cart_item.price else ""))
+        else:
+            print("    (no cart items)")
+        if not judge_enabled:
+            print("    (judge disabled)")
 
-def main():
-    """Main entry point for the evaluation CLI."""
-    parser = argparse.ArgumentParser(
-        description="Browser agent evaluation harness",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Quick test with specific items
-  uv run -m src.eval.cli run --items "apples" "milk" --llm gpt-4.1
+    # Cost efficiency summary
+    print("\n" + "-" * 90)
+    print("Cost Efficiency (tokens per successful item):")
+    for path, result in results:
+        llm = result.config_summary.get("llm_model", "unknown")[:20]
+        successful_items = sum(1 for r in result.item_results if r.status == "success")
+        total_tokens = result.cost_metrics.token_usage.total_tokens
+        if successful_items > 0 and total_tokens > 0:
+            tokens_per_success = total_tokens / successful_items
+            cost_per_success = (result.cost_metrics.estimated_cost_usd or 0) / successful_items
+            print(f"  [{llm}] {tokens_per_success:,.0f} tokens/success, ${cost_per_success:.4f}/success")
+        else:
+            print(f"  [{llm}] N/A (no successful items or no token data)")
 
-  # Run with visible browser
-  uv run -m src.eval.cli run --items "bread" --headed
 
-  # Run from config file
-  uv run -m src.eval.cli run --config eval_config.json
+def list_runs(outputs_dir: str = "outputs", limit: int = 10) -> None:
+    """List recent evaluation runs from Hydra outputs directory."""
+    from src.eval.results import EvalResult
 
-  # Generate example config
-  uv run -m src.eval.cli example-config > my_eval.json
+    outputs_path = Path(outputs_dir)
+    if not outputs_path.exists():
+        print(f"Outputs directory not found: {outputs_path}")
+        return
 
-  # List available model presets
-  uv run -m src.eval.cli list-models
+    # Find all eval_result.json files
+    result_files = list(outputs_path.rglob("eval_result.json"))
+    if not result_files:
+        print("No evaluation results found")
+        return
 
-  # View results
-  uv run -m src.eval.cli view ./eval_results/cli_eval_result.json
-        """,
-    )
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    # Sort by modification time (most recent first)
+    result_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    result_files = result_files[:limit]
 
-    # Run command
-    run_parser = subparsers.add_parser("run", help="Run an evaluation")
-    run_parser.add_argument(
-        "--items",
-        nargs="+",
-        help="Items to add to cart (e.g., --items apples milk bread)",
-    )
-    run_parser.add_argument(
-        "--config",
-        type=str,
-        help="Path to JSON config file (overrides other options)",
-    )
-    run_parser.add_argument(
-        "--name",
-        type=str,
-        default="eval",
-        help="Name for this evaluation run",
-    )
-    run_parser.add_argument(
-        "--llm",
-        type=str,
-        default="gpt-4.1",
-        help="LLM model or preset name (default: gpt-4.1)",
-    )
-    run_parser.add_argument(
-        "--temperature",
-        type=float,
-        help="LLM temperature (default: 0.0)",
-    )
-    run_parser.add_argument(
-        "--vision",
-        action="store_true",
-        help="Enable vision capabilities",
-    )
-    run_parser.add_argument(
-        "--headed",
-        action="store_true",
-        help="Run browser in headed mode (visible window)",
-    )
-    run_parser.add_argument(
-        "--stealth",
-        action="store_true",
-        help="Use stealth arguments to avoid bot detection",
-    )
-    run_parser.add_argument(
-        "--max-steps",
-        type=int,
-        default=30,
-        help="Maximum agent steps per item (default: 30)",
-    )
-    run_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=300.0,
-        help="Timeout in seconds per item (default: 300)",
-    )
-    run_parser.add_argument(
-        "--wait-between-actions",
-        type=float,
-        default=2.0,
-        help="Wait time between browser actions (default: 2.0)",
-    )
-    run_parser.add_argument(
-        "--min-wait-page-load",
-        type=float,
-        default=1.5,
-        help="Minimum wait for page loads (default: 1.5)",
-    )
-    run_parser.add_argument(
-        "--no-clear-cart",
-        action="store_true",
-        help="Don't clear cart before running",
-    )
-    run_parser.add_argument(
-        "--keep-profile",
-        action="store_true",
-        help="Keep temporary browser profile after run",
-    )
-    run_parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="./eval_results",
-        help="Directory to save results (default: ./eval_results)",
-    )
-    run_parser.add_argument(
-        "--profile-dir",
-        type=str,
-        default="./superstore-profile",
-        help="Source browser profile directory (default: ./superstore-profile)",
-    )
-    run_parser.add_argument(
-        "--prompt-file",
-        type=str,
-        help="Path to custom prompt template file",
-    )
-    run_parser.add_argument(
-        "--prompt-name",
-        type=str,
-        help="Name for the prompt variant",
-    )
-    run_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print config and exit without running",
-    )
-    run_parser.set_defaults(func=run_eval)
+    print("\n" + "=" * 100)
+    print(f"RECENT EVALUATION RUNS (last {len(result_files)})")
+    print("=" * 100)
+    print(f"{'Path':<50} {'LLM':<18} {'Success':<10} {'Tokens':<12} {'Cost':<10}")
+    print("-" * 100)
 
-    # List models command
-    list_parser = subparsers.add_parser("list-models", help="List available LLM presets")
-    list_parser.set_defaults(func=list_models)
+    for result_path in result_files:
+        try:
+            result = EvalResult.from_file(result_path)
+            # Get relative path from outputs dir
+            rel_path = str(result_path.relative_to(outputs_path.parent))[:48]
+            llm = result.config_summary.get("llm_model", "unknown")[:16]
+            tokens = f"{result.cost_metrics.token_usage.total_tokens:,}" if result.cost_metrics.token_usage.total_tokens > 0 else "N/A"
+            cost = f"${result.cost_metrics.estimated_cost_usd:.4f}" if result.cost_metrics.estimated_cost_usd else "N/A"
+            print(f"{rel_path:<50} {llm:<18} {result.success_rate:.0%}       {tokens:<12} {cost}")
+        except Exception as e:
+            print(f"{result_path}: (error: {e})")
 
-    # Example config command
-    example_parser = subparsers.add_parser("example-config", help="Print example config file")
-    example_parser.set_defaults(func=example_config)
+    print("=" * 100)
+    print(f"\nTo compare runs, use:")
+    print(f"  uv run -m src.eval.cli compare <path1> <path2> ...")
 
-    # View results command
-    view_parser = subparsers.add_parser("view", help="View results from a previous run")
-    view_parser.add_argument("result_file", help="Path to result JSON file")
-    view_parser.set_defaults(func=view_results)
 
-    # Compare results command
-    compare_parser = subparsers.add_parser("compare", help="Compare multiple evaluation results")
-    compare_parser.add_argument("result_files", nargs="+", help="Paths to result JSON files")
-    compare_parser.set_defaults(func=compare_results)
+def print_help() -> None:
+    """Print help message for the CLI."""
+    help_text = """
+Browser Agent Evaluation CLI (Hydra-powered)
 
-    args = parser.parse_args()
+USAGE:
+    uv run -m src.eval.cli [HYDRA_ARGS...]
+    uv run -m src.eval.cli <COMMAND> [ARGS...]
 
-    if args.command is None:
-        parser.print_help()
-        sys.exit(1)
+HYDRA COMMANDS (for running evaluations):
+    (default)           Run evaluation with config from conf/
+    --help              Show Hydra help
+    --cfg job           Show resolved configuration
+    --multirun          Run multiple configurations
 
-    args.func(args)
+HYDRA OVERRIDES:
+    llm=NAME            Use LLM config (gpt4, llama_70b, etc.)
+    browser=NAME        Use browser config (headless, headed, stealth)
+    prompt=NAME         Use prompt config (default, concise)
+    +experiment=NAME    Use experiment preset (quick_test, full_comparison)
+    'items=[a,b,c]'     Override items list
+    max_steps=N         Override max steps
+    dry_run=true        Print config without running
+    keep_profile=true   Keep temp browser profile after run
+
+UTILITY COMMANDS:
+    list-models         List available LLM configurations
+    list-runs [DIR] [N] List recent N evaluation runs from outputs directory
+    view FILE           View results from a previous run
+    compare FILE...     Compare multiple evaluation results (with costs/tokens)
+
+EXAMPLES:
+    # Run with default config
+    uv run -m src.eval.cli
+
+    # Override LLM
+    uv run -m src.eval.cli llm=llama_70b
+
+    # Run with visible browser
+    uv run -m src.eval.cli browser=headed
+
+    # Override items
+    uv run -m src.eval.cli 'items=[bread,eggs]'
+
+    # Multirun across LLMs
+    uv run -m src.eval.cli --multirun llm=gpt4,llama_70b
+
+    # Use experiment preset
+    uv run -m src.eval.cli +experiment=quick_test
+
+    # View results
+    uv run -m src.eval.cli view ./eval_results/eval_result.json
+"""
+    print(help_text)
+
+
+def main() -> None:
+    """Main entry point - routes to appropriate command."""
+    # Check for utility commands that don't use Hydra
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1]
+
+        if cmd == "list-models":
+            list_models()
+            return
+
+        if cmd == "view":
+            if len(sys.argv) < 3:
+                print("Error: view requires a result file path", file=sys.stderr)
+                sys.exit(1)
+            view_results(sys.argv[2])
+            return
+
+        if cmd == "compare":
+            if len(sys.argv) < 3:
+                print("Error: compare requires at least one result file", file=sys.stderr)
+                sys.exit(1)
+            compare_results(sys.argv[2:])
+            return
+
+        if cmd == "list-runs":
+            outputs_dir = sys.argv[2] if len(sys.argv) > 2 else "outputs"
+            limit = int(sys.argv[3]) if len(sys.argv) > 3 else 10
+            list_runs(outputs_dir, limit)
+            return
+
+        # Show custom help for our CLI before falling through to Hydra
+        if cmd == "help":
+            print_help()
+            return
+
+    # Fall through to Hydra for everything else (including --help, --cfg, overrides)
+    run_eval_hydra()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+# @package _global_
+
+# Full comparison experiment - compare multiple LLMs
+# Run with: uv run -m src.eval.cli +experiment=full_comparison
+
+defaults:
+  - override /browser: headless
+  - override /prompt: default
+
+name: full_comparison
+items:
+  - apples
+  - milk
+  - bread
+
+max_steps: 30
+timeout_seconds: 300.0
+clear_cart_before_run: true
+
+# Note: To compare LLMs, use multirun:
+# uv run -m src.eval.cli --multirun llm=gpt4,llama_70b,gpt_oss_120b +experiment=full_comparison

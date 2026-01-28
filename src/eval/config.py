@@ -2,11 +2,13 @@
 
 Defines the configuration schema for evaluation runs, including
 LLM settings, prompt templates, and timing parameters.
+
+Note: Configuration is now managed via Hydra (see conf/ directory).
+These Pydantic models are still used internally by EvalHarness.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Literal
 
@@ -36,6 +38,56 @@ class LLMConfig(BaseModel):
     def get_display_name(self) -> str:
         """Get a display-friendly name for this LLM config."""
         return f"{self.provider}/{self.model}"
+
+
+class JudgeConfig(BaseModel):
+    """LLM-as-a-judge configuration for evaluating cart contents."""
+
+    model: str = Field(
+        default="gpt-4o",
+        description="Model identifier for the judge LLM",
+    )
+    provider: Literal["groq", "openai", "anthropic"] = Field(
+        default="openai",
+        description="LLM provider for the judge",
+    )
+    temperature: float = Field(
+        default=0.0,
+        description="Sampling temperature (0.0 for deterministic judging)",
+    )
+    prompt_template: str | None = Field(
+        default=None,
+        description="Path to custom judge prompt template. If None, uses default prompt.",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether to run LLM judge evaluation",
+    )
+
+    def get_display_name(self) -> str:
+        """Get a display-friendly name for this judge config."""
+        return f"{self.provider}/{self.model}"
+
+    def get_prompt_template(self) -> str | None:
+        """Load custom prompt template if specified.
+
+        Returns:
+            Template content string or None if using default
+        """
+        if not self.prompt_template:
+            return None
+
+        path = Path(self.prompt_template)
+        if path.exists():
+            return path.read_text()
+
+        # Try relative to project root
+        for base in [Path.cwd(), Path(__file__).parent.parent.parent]:
+            full_path = base / self.prompt_template
+            if full_path.exists():
+                return full_path.read_text()
+
+        raise FileNotFoundError(f"Judge prompt template not found: {self.prompt_template}")
 
 
 class PromptConfig(BaseModel):
@@ -107,8 +159,12 @@ class BrowserConfig(BaseModel):
         default=1.5,
         description="Seconds to wait for network idle",
     )
-    window_width: int = Field(default=1280, description="Browser window width")
-    window_height: int = Field(default=800, description="Browser window height")
+    window_width: int = Field(default=1920, description="Browser window width")
+    window_height: int = Field(default=1080, description="Browser window height")
+    use_deterministic_extraction: bool = Field(
+        default=True,
+        description="Use deterministic DOM parsing for cart extraction instead of LLM",
+    )
 
 
 class EvalRun(BaseModel):
@@ -131,6 +187,10 @@ class EvalRun(BaseModel):
     browser: BrowserConfig = Field(
         default_factory=BrowserConfig,
         description="Browser configuration",
+    )
+    judge: JudgeConfig = Field(
+        default_factory=JudgeConfig,
+        description="LLM-as-a-judge configuration for cart verification",
     )
     max_steps: int = Field(
         default=30,
@@ -162,51 +222,17 @@ class EvalConfig(BaseModel):
         description="Base URL for the grocery store",
     )
     cart_url: str = Field(
-        default="https://www.realcanadiansuperstore.ca/cart",
+        default="https://www.realcanadiansuperstore.ca/en/cartReview",
         description="URL for the shopping cart page",
     )
     output_dir: str = Field(
         default="./eval_results",
         description="Directory to save evaluation results",
     )
-    source_profile_dir: str = Field(
-        default="./superstore-profile",
-        description="Source browser profile with login session",
-    )
     parallel: bool = Field(
         default=False,
         description="Run multiple items in parallel (not recommended for eval)",
     )
-    clear_cart_before_run: bool = Field(
-        default=True,
-        description="Clear the cart before each evaluation run",
-    )
-
-    @classmethod
-    def from_file(cls, path: str | Path) -> EvalConfig:
-        """Load configuration from a JSON file.
-
-        Args:
-            path: Path to the JSON config file
-
-        Returns:
-            EvalConfig instance
-        """
-        path = Path(path)
-        with open(path) as f:
-            data = json.load(f)
-        return cls.model_validate(data)
-
-    def to_file(self, path: str | Path) -> None:
-        """Save configuration to a JSON file.
-
-        Args:
-            path: Path to save the config file
-        """
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(self.model_dump(), f, indent=2)
 
     @classmethod
     def quick(
@@ -235,30 +261,3 @@ class EvalConfig(BaseModel):
                 )
             ],
         )
-
-
-# Preset LLM configurations for common models
-LLM_PRESETS: dict[str, LLMConfig] = {
-    "gpt-4.1": LLMConfig(model="gpt-4.1", provider="groq"),
-    "gpt-oss-120b": LLMConfig(model="openai/gpt-oss-120b", provider="groq"),
-    "llama-70b": LLMConfig(model="llama-3.3-70b-versatile", provider="groq"),
-    "llama-8b": LLMConfig(model="llama-3.1-8b-instant", provider="groq"),
-}
-
-
-def get_llm_preset(name: str) -> LLMConfig:
-    """Get a preset LLM configuration by name.
-
-    Args:
-        name: Preset name (e.g., 'gpt-4.1', 'llama-70b')
-
-    Returns:
-        LLMConfig for the preset
-
-    Raises:
-        ValueError: If preset not found
-    """
-    if name not in LLM_PRESETS:
-        available = ", ".join(LLM_PRESETS.keys())
-        raise ValueError(f"Unknown LLM preset '{name}'. Available: {available}")
-    return LLM_PRESETS[name].model_copy()
