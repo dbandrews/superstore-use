@@ -161,10 +161,15 @@ class BrowserConfig(BaseModel):
     )
     window_width: int = Field(default=1920, description="Browser window width")
     window_height: int = Field(default=1080, description="Browser window height")
-    use_deterministic_extraction: bool = Field(
-        default=True,
-        description="Use deterministic DOM parsing for cart extraction instead of LLM",
+    api_key: str | None = Field(
+        default=None,
+        description="API key for cart extraction (defaults to known static key)",
     )
+
+    def get_display_name(self) -> str:
+        """Get a display-friendly name for this browser config."""
+        mode = "headed" if not self.headless else "headless"
+        return mode
 
 
 class EvalRun(BaseModel):

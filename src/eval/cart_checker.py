@@ -1,12 +1,16 @@
 """Cart verification for evaluation runs.
 
-Uses the same browser profile to open the cart after a test run
-and extract/verify the cart contents. Includes an LLM judge for
-semantic matching of requested items vs cart contents.
+Uses the Real Canadian Superstore API to extract detailed cart contents
+after a test run. Includes an LLM judge for semantic matching of
+requested items vs cart contents.
 
-Supports two extraction modes:
-1. Deterministic DOM parsing via JavaScript (fast, ~1-2 seconds)
-2. LLM-based extraction (slower, 10-30 seconds, fallback)
+API extraction provides rich product data:
+- Full brand names and product names
+- Package sizes (calculated from comparison prices)
+- Product descriptions
+- Pricing information
+
+Fast and reliable (~200-500ms), no LLM required for extraction.
 """
 
 from __future__ import annotations
@@ -17,111 +21,114 @@ import re
 import time
 from typing import TYPE_CHECKING
 
-from browser_use import Agent
 from langchain_core.messages import HumanMessage
+from playwright.async_api import Page
 from pydantic import BaseModel, Field
 
-from src.core.config import load_config
 from src.eval.results import CartItem
 
 if TYPE_CHECKING:
     from browser_use import Browser
 
 
-# JavaScript for deterministic cart extraction using data-track-products-array attributes
-CART_EXTRACTION_JS = '''
-(() => {
-    const elements = document.querySelectorAll('[data-track-products-array]');
-    const products = [];
-    const seen = new Set();
-
-    elements.forEach(el => {
-        try {
-            const jsonStr = el.getAttribute('data-track-products-array');
-            const items = JSON.parse(jsonStr);
-
-            items.forEach(item => {
-                if (item.productSKU && seen.has(item.productSKU)) return;
-                if (item.productSKU) seen.add(item.productSKU);
-
-                products.push({
-                    name: item.productName || '',
-                    brand: item.productBrand || '',
-                    price: item.productPrice || '',
-                    quantity: parseInt(item.productQuantity) || 1,
-                    sku: item.productSKU || '',
-                });
-            });
-        } catch (e) {}
-    });
-
-    return products;
-})()
-'''
-
-
-def _convert_to_cart_items(products: list[dict]) -> list[CartItem]:
-    """Convert extracted product data to CartItem objects.
-
-    Args:
-        products: List of product dicts from JavaScript extraction
-
-    Returns:
-        List of CartItem objects
-    """
-    items = []
-    for p in products:
-        name = p.get("name", "")
-        brand = p.get("brand", "")
-        if brand and brand.lower() not in name.lower():
-            full_name = f"{brand} - {name}"
-        else:
-            full_name = name
-
-        price_val = p.get("price", "")
-        price = f"${price_val}" if price_val else None
-
-        items.append(CartItem(
-            name=full_name,
-            quantity=p.get("quantity", 1),
-            price=price,
-            raw_text=json.dumps(p),
-        ))
-    return items
-
-
-async def extract_cart_contents_deterministic(
-    browser: "Browser",
+async def extract_cart_contents_api(
+    page: Page,
     cart_url: str,
-    initial_wait: float = 10.0,
+    api_key: str | None = None,
 ) -> tuple[list[CartItem], str, float]:
-    """Extract cart contents using deterministic DOM parsing.
+    """Extract cart contents via Real Canadian Superstore API.
 
-    Uses JavaScript to parse data-track-products-array attributes on the page,
-    which is faster and more reliable than LLM-based extraction.
+    Uses the pcexpress.ca BFF API to fetch structured cart data with
+    detailed product information (brand, description, package size).
 
     Args:
-        browser: Browser instance with the same profile used for shopping
-        cart_url: URL of the cart page
-        initial_wait: Seconds to wait after page navigation for dynamic content to load
+        page: Playwright page (browser session with valid cookies)
+        cart_url: Cart URL (used to ensure user is on cart page if needed)
+        api_key: API key for pcexpress.ca (defaults to known static value)
 
     Returns:
-        Tuple of (list of CartItems, raw content string, duration in seconds)
+        Tuple of (cart_items, raw_json, duration_seconds)
+
+    Raises:
+        ValueError: If cart ID not found in localStorage
+        RuntimeError: If API request fails
     """
-    start_time = time.time()
+    start = time.time()
 
-    try:
-        page = await browser.get_current_page()
-        await page.goto(cart_url, wait_until="networkidle")
-        await asyncio.sleep(initial_wait)
+    # Default API key for Real Canadian Superstore
+    if api_key is None:
+        api_key = "C1xujSegT5j3ap3yexJjqhOfELwGKYvz"
 
-        products = await page.evaluate(CART_EXTRACTION_JS)
-        items = _convert_to_cart_items(products)
-        raw_content = json.dumps(products, indent=2)
+    # Extract cart ID from localStorage
+    cart_id = await page.evaluate("() => localStorage.getItem('ANONYMOUS_CART_ID')")
 
-        return items, raw_content, time.time() - start_time
-    except Exception as e:
-        return [], f"Error: {str(e)}", time.time() - start_time
+    if not cart_id:
+        raise ValueError(
+            "Cart ID not found in localStorage. "
+            "User may need to log in or visit cart page first."
+        )
+
+    # Fetch cart data via API
+    cart_data = await page.evaluate(
+        """
+        async (args) => {
+            const response = await fetch(
+                `https://api.pcexpress.ca/pcx-bff/api/v1/carts/${args.cartId}`,
+                {
+                    headers: {
+                        'accept': 'application/json',
+                        'x-apikey': args.apiKey,
+                        'site-banner': 'superstore',
+                        'x-application-type': 'Web'
+                    }
+                }
+            );
+
+            if (!response.ok) {
+                throw new Error(`Cart API returned ${response.status}: ${response.statusText}`);
+            }
+
+            return await response.json();
+        }
+        """,
+        {"cartId": cart_id, "apiKey": api_key},
+    )
+
+    # Extract products from response
+    cart_items = []
+    for order in cart_data.get("orders", []):
+        for entry in order.get("entries", []):
+            product = entry["offer"]["product"]
+            prices = entry["prices"]
+
+            # Calculate package size from comparison prices
+            comp_prices = prices.get("comparisonPrices", [])
+            package_info = ""
+            if comp_prices:
+                comp = comp_prices[0]
+                # Calculate size: (product_price / comparison_price) * comparison_quantity
+                try:
+                    size_value = (product["price"] / comp["price"]) * comp["quantity"]
+                    # Round to reasonable precision
+                    size_rounded = round(size_value) if size_value >= 10 else round(size_value, 1)
+                    package_info = f" ({size_rounded} {comp['unit']})"
+                except (ZeroDivisionError, KeyError):
+                    pass  # Skip package info if calculation fails
+
+            # Format cart item with rich details
+            cart_items.append(
+                CartItem(
+                    name=f"{product['brand']} - {product['name']}{package_info}",
+                    quantity=int(entry["quantity"]),
+                    price=f"${product['price']:.2f}",
+                    raw_text=product.get("description", ""),  # Full description for judge
+                )
+            )
+
+    duration = time.time() - start
+    raw_json = json.dumps(cart_data, indent=2)
+
+    return cart_items, raw_json, duration
 
 
 class ItemJudgment(BaseModel):
@@ -288,271 +295,43 @@ async def judge_cart_contents(
         )
 
 
-# Default cart extraction prompt
-CART_EXTRACTION_PROMPT = """
-Navigate to {cart_url} and extract all items in the shopping cart.
-
-Steps:
-1. Go directly to {cart_url}
-2. IMPORTANT: Wait at least {wait_seconds} seconds for the cart page to fully load.
-   Grocery store cart pages load content dynamically via JavaScript.
-   Do NOT proceed until you see cart items or a clear "empty cart" message.
-3. Look for all product items listed in the cart
-4. For each item, extract:
-   - Product name (the main product title)
-   - Quantity (how many of this item)
-   - Price (if visible)
-
-CRITICAL: Your ONLY task is to extract and report the cart contents.
-Do NOT add, remove, or modify any items.
-Do NOT click any buttons except to navigate to the cart.
-
-Return a structured list of all items in the cart in this exact format:
-CART_CONTENTS_START
-- [quantity]x [product name] | $[price]
-- [quantity]x [product name] | $[price]
-CART_CONTENTS_END
-
-Examples:
-CART_CONTENTS_START
-- 2x Bananas | $1.49
-- 1x 2% Milk 4L | $6.99
-- 3x Whole Wheat Bread | $3.49
-CART_CONTENTS_END
-
-If the cart is empty, return:
-CART_CONTENTS_START
-EMPTY
-CART_CONTENTS_END
-
-If you cannot access the cart, return:
-CART_CONTENTS_START
-ERROR: [reason]
-CART_CONTENTS_END
-"""
-
-
-def parse_cart_output(raw_output: str) -> tuple[list[CartItem], str | None]:
-    """Parse the agent's cart extraction output into structured CartItems.
-
-    Args:
-        raw_output: Raw text output from the cart extraction agent
-
-    Returns:
-        Tuple of (list of CartItems, error message if any)
-    """
-    items = []
-    error = None
-
-    # Find the cart contents block
-    start_marker = "CART_CONTENTS_START"
-    end_marker = "CART_CONTENTS_END"
-
-    start_idx = raw_output.find(start_marker)
-    end_idx = raw_output.find(end_marker)
-
-    if start_idx == -1 or end_idx == -1:
-        # Try to parse without markers (fallback)
-        content = raw_output
-    else:
-        content = raw_output[start_idx + len(start_marker):end_idx].strip()
-
-    # Check for empty cart
-    if "EMPTY" in content.upper() or "empty" in content.lower():
-        return [], None
-
-    # Check for error
-    if content.startswith("ERROR:"):
-        return [], content
-
-    # Parse item lines
-    # Pattern: "- [quantity]x [product name] | $[price]" or similar
-    lines = content.strip().split("\n")
-
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        # Remove leading dash/bullet
-        if line.startswith("-"):
-            line = line[1:].strip()
-        elif line.startswith("*"):
-            line = line[1:].strip()
-
-        # Try to parse quantity
-        quantity = 1
-        name = line
-        price = None
-
-        # Pattern: "2x Product Name | $4.99" or "2x Product Name - $4.99"
-        qty_match = re.match(r"(\d+)\s*x\s+(.+)", line, re.IGNORECASE)
-        if qty_match:
-            quantity = int(qty_match.group(1))
-            remainder = qty_match.group(2)
-        else:
-            remainder = line
-
-        # Split by price separator
-        price_separators = [" | $", " - $", " @ $", " $"]
-        for sep in price_separators:
-            if sep in remainder:
-                parts = remainder.split(sep, 1)
-                name = parts[0].strip()
-                price = "$" + parts[1].strip() if parts[1] else None
-                break
-        else:
-            # No price found, entire remainder is the name
-            name = remainder.strip()
-
-        if name:
-            items.append(CartItem(
-                name=name,
-                quantity=quantity,
-                price=price,
-                raw_text=line,
-            ))
-
-    return items, error
-
-
 async def extract_cart_contents(
     browser: "Browser",
     cart_url: str,
-    llm,
-    max_steps: int = 20,
-    use_vision: bool = False,
-    initial_wait: float = 10.0,
-    use_deterministic: bool = True,
+    api_key: str | None = None,
 ) -> tuple[list[CartItem], str, float]:
-    """Extract cart contents using deterministic DOM parsing or LLM agent.
+    """Extract cart contents using API only.
+
+    Uses the Real Canadian Superstore API to fetch detailed cart data
+    including product names, brands, descriptions, and package sizes.
 
     Args:
         browser: Browser instance with the same profile used for shopping
         cart_url: URL of the cart page
-        llm: LLM instance to use for the agent (used only if deterministic fails)
-        max_steps: Maximum agent steps (for LLM fallback)
-        use_vision: Whether to enable vision capabilities (for LLM fallback)
-        initial_wait: Seconds to wait after page navigation for dynamic content to load
-        use_deterministic: Use deterministic DOM parsing instead of LLM agent (default True)
+        api_key: Optional API key override (defaults to known static key)
 
     Returns:
-        Tuple of (list of CartItems, raw content string, duration in seconds)
+        Tuple of (list of CartItems, raw JSON string, duration in seconds)
+
+    Raises:
+        ValueError: If cart ID not found in localStorage
+        RuntimeError: If API request fails
     """
-    # Try deterministic extraction first if enabled
-    if use_deterministic:
-        items, raw_content, duration = await extract_cart_contents_deterministic(
-            browser=browser,
+    page = await browser.new_page()
+    try:
+        # Navigate to cart page to ensure localStorage is populated
+        await page.goto(cart_url)
+        await page.wait_for_load_state("networkidle")
+
+        # Extract via API (only method)
+        return await extract_cart_contents_api(
+            page=page,
             cart_url=cart_url,
-            initial_wait=initial_wait,
+            api_key=api_key,
         )
 
-        # If deterministic extraction succeeded, return the results
-        if items or "Error" not in raw_content:
-            return items, raw_content, duration
-
-        # Fall through to LLM extraction if deterministic failed
-
-    start_time = time.time()
-
-    prompt = CART_EXTRACTION_PROMPT.format(cart_url=cart_url, wait_seconds=int(initial_wait))
-
-    agent = Agent(
-        task=prompt,
-        llm=llm,
-        browser_session=browser,
-        use_vision=use_vision,
-    )
-
-    # Custom step callback to enforce wait after navigation
-    navigated = [False]
-    wait_done = [False]
-
-    async def on_step_end(step_result):
-        # After first step (which should be navigation), wait for dynamic content
-        if not navigated[0]:
-            navigated[0] = True
-        elif not wait_done[0]:
-            # Wait after navigation step for dynamic content to load
-            await asyncio.sleep(initial_wait)
-            wait_done[0] = True
-
-    await agent.run(max_steps=max_steps, on_step_end=on_step_end)
-
-    # Extract content from agent history
-    raw_content = ""
-    try:
-        extracted = agent.history.extracted_content()
-        if extracted:
-            raw_content = "\n".join(str(c) for c in extracted)
-
-        # Also check model outputs for the structured response
-        thoughts = agent.history.model_thoughts()
-        if thoughts:
-            raw_content += "\n" + "\n".join(str(t) for t in thoughts)
-    except Exception as e:
-        raw_content = f"Error extracting history: {e}"
-
-    duration = time.time() - start_time
-    items, error = parse_cart_output(raw_content)
-
-    if error:
-        raw_content = f"{error}\n\n{raw_content}"
-
-    return items, raw_content, duration
-
-
-async def clear_cart(
-    browser: "Browser",
-    cart_url: str,
-    llm,
-    max_steps: int = 30,
-    use_vision: bool = False,
-) -> bool:
-    """Clear all items from the cart.
-
-    Args:
-        browser: Browser instance
-        cart_url: URL of the cart page
-        llm: LLM instance
-        max_steps: Maximum agent steps
-        use_vision: Whether to enable vision
-
-    Returns:
-        True if cart was cleared successfully
-    """
-    prompt = f"""
-    Navigate to {cart_url} and remove ALL items from the shopping cart.
-
-    Steps:
-    1. Go to {cart_url}
-    2. Wait for the cart to load
-    3. For each item in the cart:
-       - Find the remove/delete button (usually an X or trash icon)
-       - Click it to remove the item
-    4. Repeat until the cart is empty
-    5. Confirm the cart shows "empty" or "no items"
-
-    Return success when the cart is completely empty.
-    """
-
-    agent = Agent(
-        task=prompt,
-        llm=llm,
-        browser_session=browser,
-        use_vision=use_vision,
-    )
-
-    try:
-        await agent.run(max_steps=max_steps)
-        # Check if cart appears empty
-        extracted = agent.history.extracted_content()
-        for content in extracted:
-            if "empty" in str(content).lower():
-                return True
-        return True  # Assume success if no error
-    except Exception:
-        return False
+    finally:
+        await page.close()
 
 
 def match_cart_to_requested(

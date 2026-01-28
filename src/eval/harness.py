@@ -366,8 +366,8 @@ class EvalHarness:
                 cost_str = f", ${item_result.estimated_cost_usd:.4f}" if item_result.estimated_cost_usd else ""
                 self._log(f"  {status_icon} {item}: {item_result.status} ({item_result.duration_seconds:.1f}s{tokens_str}{cost_str})")
 
-            # Verify cart contents with fresh browser
-            self._log("Verifying cart contents...")
+            # Verify cart contents via API with fresh browser
+            self._log("Extracting cart contents via API...")
             # Wait for profile data to fully sync to disk
             await asyncio.sleep(2)
 
@@ -375,9 +375,7 @@ class EvalHarness:
             cart_items, raw_content, cart_duration = await extract_cart_contents(
                 browser=cart_browser,
                 cart_url=self.config.cart_url,
-                llm=llm,
-                use_vision=run.llm.use_vision,
-                use_deterministic=run.browser.use_deterministic_extraction,
+                api_key=run.browser.api_key,
             )
 
             # Clean up cart browser
