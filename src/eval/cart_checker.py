@@ -317,21 +317,18 @@ async def extract_cart_contents(
         ValueError: If cart ID not found in localStorage
         RuntimeError: If API request fails
     """
-    page = await browser.new_page()
-    try:
-        # Navigate to cart page to ensure localStorage is populated
-        await page.goto(cart_url)
-        await page.wait_for_load_state("networkidle")
+    # Get current page from browser-use Browser instance
+    page = await browser.get_current_page()
 
-        # Extract via API (only method)
-        return await extract_cart_contents_api(
-            page=page,
-            cart_url=cart_url,
-            api_key=api_key,
-        )
+    # Navigate to cart page to ensure localStorage is populated
+    await page.goto(cart_url, wait_until="networkidle")
 
-    finally:
-        await page.close()
+    # Extract via API (only method)
+    return await extract_cart_contents_api(
+        page=page,
+        cart_url=cart_url,
+        api_key=api_key,
+    )
 
 
 def match_cart_to_requested(
