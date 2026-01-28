@@ -320,6 +320,12 @@ async def extract_cart_contents(
     # Get current page from browser-use Browser instance
     page = await browser.get_current_page()
 
+    # If no page exists, create one through the browser context
+    if page is None:
+        # browser-use Browser has a browser_context attribute
+        context = browser.browser_context
+        page = await context.new_page()
+
     # Navigate to cart page to ensure localStorage is populated
     await page.goto(cart_url, wait_until="networkidle")
 
