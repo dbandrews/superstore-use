@@ -334,8 +334,12 @@ async def extract_cart_contents(
             # Create a new page
             page = await browser.new_page()
 
-            # Navigate to cart URL and wait for page load
-            await page.goto(cart_url, wait_until="networkidle")
+            # Navigate to cart URL with lenient wait and timeout
+            # Use "load" instead of "networkidle" - networkidle can hang on analytics/tracking
+            await page.goto(cart_url, wait_until="load", timeout=60000)
+
+            # Give it a moment for localStorage to be accessible
+            await asyncio.sleep(2)
 
             # Extract via API
             return await extract_cart_contents_api(
