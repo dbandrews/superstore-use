@@ -22,7 +22,7 @@ import time
 from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage
-from playwright.async_api import Page
+from playwright.async_api import Page, async_playwright
 from pydantic import BaseModel, Field
 
 from src.eval.results import CartItem
@@ -296,19 +296,24 @@ async def judge_cart_contents(
 
 
 async def extract_cart_contents(
-    browser: "Browser",
+    profile_path: str,
     cart_url: str,
     api_key: str | None = None,
+    headless: bool = True,
 ) -> tuple[list[CartItem], str, float]:
-    """Extract cart contents using API only.
+    """Extract cart contents using API only with Playwright directly.
 
     Uses the Real Canadian Superstore API to fetch detailed cart data
     including product names, brands, descriptions, and package sizes.
 
+    Uses Playwright directly (not browser-use) to avoid wrapper complications
+    and ensure localStorage access works correctly.
+
     Args:
-        browser: Browser instance with the same profile used for shopping
+        profile_path: Path to browser profile directory (contains cookies and localStorage)
         cart_url: URL of the cart page
         api_key: Optional API key override (defaults to known static key)
+        headless: Run browser in headless mode (default True)
 
     Returns:
         Tuple of (list of CartItems, raw JSON string, duration in seconds)
@@ -317,29 +322,31 @@ async def extract_cart_contents(
         ValueError: If cart ID not found in localStorage
         RuntimeError: If API request fails
     """
-    # Start browser if not already started
-    # browser-use requires explicit start() when not using Agent
-    try:
-        await browser.start()
-    except Exception:
-        # Already started or initialization error - continue
-        pass
+    async with async_playwright() as p:
+        # Launch browser with the profile directory
+        browser = await p.chromium.launch_persistent_context(
+            user_data_dir=profile_path,
+            headless=headless,
+            args=["--disable-features=LockProfileCookieDatabase"],
+        )
 
-    # Create a new page without URL first
-    page = await browser.new_page()
+        try:
+            # Create a new page
+            page = await browser.new_page()
 
-    # Navigate to cart URL and wait for full page load
-    await page.goto(cart_url)
+            # Navigate to cart URL and wait for page load
+            await page.goto(cart_url, wait_until="networkidle")
 
-    # Wait for network to be idle to ensure localStorage is accessible
-    await asyncio.sleep(2)
+            # Extract via API
+            return await extract_cart_contents_api(
+                page=page,
+                cart_url=cart_url,
+                api_key=api_key,
+            )
 
-    # Extract via API (only method)
-    return await extract_cart_contents_api(
-        page=page,
-        cart_url=cart_url,
-        api_key=api_key,
-    )
+        finally:
+            # Close browser
+            await browser.close()
 
 
 def match_cart_to_requested(

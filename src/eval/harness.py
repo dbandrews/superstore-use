@@ -366,23 +366,17 @@ class EvalHarness:
                 cost_str = f", ${item_result.estimated_cost_usd:.4f}" if item_result.estimated_cost_usd else ""
                 self._log(f"  {status_icon} {item}: {item_result.status} ({item_result.duration_seconds:.1f}s{tokens_str}{cost_str})")
 
-            # Verify cart contents via API with fresh browser
+            # Verify cart contents via API using Playwright directly
             self._log("Extracting cart contents via API...")
             # Wait for profile data to fully sync to disk
             await asyncio.sleep(2)
 
-            cart_browser = self._create_browser(run, str(temp_profile))
             cart_items, raw_content, cart_duration = await extract_cart_contents(
-                browser=cart_browser,
+                profile_path=str(temp_profile),
                 cart_url=self.config.cart_url,
                 api_key=run.browser.api_key,
+                headless=run.browser.headless,
             )
-
-            # Clean up cart browser
-            try:
-                await cart_browser.kill()
-            except Exception:
-                pass
 
             result.cart_items = cart_items
             result.cart_raw_content = raw_content
