@@ -1,0 +1,3 @@
+name: concise
+template_path: src/prompts/add_item_concise.md
+template_content: null

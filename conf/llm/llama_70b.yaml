@@ -1,0 +1,4 @@
+model: llama-3.3-70b-versatile
+provider: groq
+temperature: 0.0
+use_vision: false

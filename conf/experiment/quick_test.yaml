@@ -1,0 +1,15 @@
+# @package _global_
+
+# Quick test experiment - single item for fast verification
+defaults:
+  - override /llm: gpt4
+  - override /browser: headed
+  - override /prompt: default
+
+name: quick_test
+items:
+  - apples
+
+max_steps: 20
+timeout_seconds: 180.0
+clear_cart_before_run: true
