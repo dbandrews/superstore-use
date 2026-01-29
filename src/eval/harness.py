@@ -371,22 +371,34 @@ class EvalHarness:
             # Wait for profile data to fully sync to disk
             await asyncio.sleep(2)
 
-            cart_items, raw_content, cart_duration = await extract_cart_contents(
-                profile_path=str(temp_profile),
-                cart_url=self.config.cart_url,
-                api_key=run.browser.api_key,
-                headless=run.browser.headless,
-            )
+            cart_extraction_error: str | None = None
+            try:
+                cart_items, raw_content, cart_duration = await extract_cart_contents(
+                    profile_path=str(temp_profile),
+                    cart_url=self.config.cart_url,
+                    api_key=run.browser.api_key,
+                    headless=run.browser.headless,
+                )
 
-            result.cart_items = cart_items
-            result.cart_raw_content = raw_content
-            result.cart_verified = True
-            result.metrics.cart_check_duration_seconds = cart_duration
+                result.cart_items = cart_items
+                result.cart_raw_content = raw_content
+                result.cart_verified = True
+                result.metrics.cart_check_duration_seconds = cart_duration
 
-            self._log(f"Cart contains {len(cart_items)} items")
+                self._log(f"Cart contains {len(cart_items)} items")
+            except Exception as e:
+                cart_extraction_error = str(e)
+                result.cart_verified = False
+                result.cart_extraction_error = cart_extraction_error
+                self._log(f"Cart extraction error: {e}")
+                # Mark all items that were "success" as "uncertain" since we can't verify
+                for item_result in result.item_results:
+                    if item_result.status == "success":
+                        item_result.status = "uncertain"
+                        item_result.error_message = f"Cart extraction failed: {cart_extraction_error}"
 
-            # Use LLM judge to evaluate cart contents against requested items
-            if run.judge.enabled:
+            # Use LLM judge to evaluate cart contents (only if cart extraction succeeded)
+            if cart_extraction_error is None and run.judge.enabled:
                 self._log(f"Judging cart contents with LLM ({run.judge.get_display_name()})...")
                 judge_llm_config = {
                     "provider": run.judge.provider,
@@ -399,48 +411,60 @@ class EvalHarness:
 
                 judgment = await judge_cart_contents(
                     requested_items=run.items,
-                    cart_items=cart_items,
+                    cart_items=result.cart_items,
                     llm_config=judge_llm_config,
                     custom_prompt=custom_prompt,
                 )
 
                 self._log(f"LLM Judge: {judgment.summary}")
-            else:
-                self._log("LLM judge disabled, skipping judgment")
-                # Create a placeholder judgment when disabled
-                from src.eval.cart_checker import CartJudgment
-                judgment = CartJudgment(summary="LLM judge disabled")
 
-            # Update item results based on LLM judgment (only if judge is enabled)
-            if run.judge.enabled:
-                for item_judgment in judgment.item_judgments:
-                    # Find the matching item result
+                # Check if judge encountered an error (empty item_judgments with error summary)
+                if not judgment.item_judgments and "error" in judgment.summary.lower():
+                    result.judge_error = judgment.summary
+                    self._log(f"LLM Judge error: {judgment.summary}")
+                    # Mark all items that were "success" as "uncertain" since we can't verify
                     for item_result in result.item_results:
-                        if item_result.item == item_judgment.requested_item:
-                            if item_judgment.found and item_judgment.correct_quantity:
-                                item_result.status = "success"
-                                item_result.success_evidence = f"Found: {item_judgment.matched_cart_item} (qty: {item_judgment.matched_quantity}) - {item_judgment.reasoning}"
-                                # Create matched cart item
-                                if item_judgment.matched_cart_item:
-                                    item_result.matched_cart_item = CartItem(
-                                        name=item_judgment.matched_cart_item,
-                                        quantity=item_judgment.matched_quantity or 1,
-                                    )
-                            elif item_judgment.found:
-                                # Found but wrong quantity
-                                item_result.status = "failed"
-                                item_result.success_evidence = None
-                                item_result.error_message = f"Mismatch: qty: wanted {item_judgment.requested_quantity}, got {item_judgment.matched_quantity} - {item_judgment.reasoning}"
-                            else:
-                                # Not found
-                                item_result.status = "failed"
-                                item_result.success_evidence = None
-                                item_result.error_message = f"Not found in cart - {item_judgment.reasoning}"
-                            break
+                        if item_result.status == "success":
+                            item_result.status = "uncertain"
+                            item_result.error_message = f"Judge error: {judgment.summary}"
+                else:
+                    # Update item results based on LLM judgment
+                    for item_judgment in judgment.item_judgments:
+                        # Find the matching item result
+                        for item_result in result.item_results:
+                            if item_result.item == item_judgment.requested_item:
+                                if item_judgment.found and item_judgment.correct_quantity:
+                                    item_result.status = "success"
+                                    item_result.success_evidence = f"Found: {item_judgment.matched_cart_item} (qty: {item_judgment.matched_quantity}) - {item_judgment.reasoning}"
+                                    # Create matched cart item
+                                    if item_judgment.matched_cart_item:
+                                        item_result.matched_cart_item = CartItem(
+                                            name=item_judgment.matched_cart_item,
+                                            quantity=item_judgment.matched_quantity or 1,
+                                        )
+                                elif item_judgment.found:
+                                    # Found but wrong quantity
+                                    item_result.status = "failed"
+                                    item_result.success_evidence = None
+                                    item_result.error_message = f"Mismatch: qty: wanted {item_judgment.requested_quantity}, got {item_judgment.matched_quantity} - {item_judgment.reasoning}"
+                                else:
+                                    # Not found
+                                    item_result.status = "failed"
+                                    item_result.success_evidence = None
+                                    item_result.error_message = f"Not found in cart - {item_judgment.reasoning}"
+                                break
+            elif cart_extraction_error is None and not run.judge.enabled:
+                self._log("LLM judge disabled, skipping judgment")
+            # If cart_extraction_error is set, items were already marked as uncertain above
 
         except Exception as e:
             result.error = str(e)
             self._log(f"Run error: {e}")
+            # Mark all items that were "success" as "uncertain" since we hit an unexpected error
+            for item_result in result.item_results:
+                if item_result.status == "success":
+                    item_result.status = "uncertain"
+                    item_result.error_message = f"Run error: {str(e)}"
 
         # Finalize metrics and calculate success rate
         result.metrics.finalize()

@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from src.eval.results import CartItem
 
 if TYPE_CHECKING:
-    from browser_use import Browser
+    pass
 
 
 async def extract_cart_contents_api(
@@ -63,10 +63,7 @@ async def extract_cart_contents_api(
     cart_id = await page.evaluate("() => localStorage.getItem('ANONYMOUS_CART_ID')")
 
     if not cart_id:
-        raise ValueError(
-            "Cart ID not found in localStorage. "
-            "User may need to log in or visit cart page first."
-        )
+        raise ValueError("Cart ID not found in localStorage. User may need to log in or visit cart page first.")
 
     # Fetch cart data via API
     cart_data = await page.evaluate(
@@ -101,26 +98,32 @@ async def extract_cart_contents_api(
             product = entry["offer"]["product"]
             prices = entry["prices"]
 
+            # Get price - product["price"] can be None for sale items, fall back to prices object
+            product_price = product.get("price")
+            if product_price is None:
+                product_price = prices.get("salePrice") or prices.get("totalSalePrice")
+
             # Calculate package size from comparison prices
             comp_prices = prices.get("comparisonPrices", [])
             package_info = ""
-            if comp_prices:
+            if comp_prices and product_price is not None:
                 comp = comp_prices[0]
                 # Calculate size: (product_price / comparison_price) * comparison_quantity
                 try:
-                    size_value = (product["price"] / comp["price"]) * comp["quantity"]
+                    size_value = (product_price / comp["price"]) * comp["quantity"]
                     # Round to reasonable precision
                     size_rounded = round(size_value) if size_value >= 10 else round(size_value, 1)
                     package_info = f" ({size_rounded} {comp['unit']})"
-                except (ZeroDivisionError, KeyError):
+                except (ZeroDivisionError, KeyError, TypeError):
                     pass  # Skip package info if calculation fails
 
             # Format cart item with rich details
+            price_str = f"${product_price:.2f}" if product_price is not None else None
             cart_items.append(
                 CartItem(
-                    name=f"{product['brand']} - {product['name']}{package_info}",
+                    name=f"{product.get('brand', '')} - {product.get('name', 'Unknown')}{package_info}",
                     quantity=int(entry["quantity"]),
-                    price=f"${product['price']:.2f}",
+                    price=price_str,
                     raw_text=product.get("description", ""),  # Full description for judge
                 )
             )
@@ -138,8 +141,8 @@ class ItemJudgment(BaseModel):
     found: bool = Field(description="Whether the item was found in the cart")
     correct_quantity: bool = Field(description="Whether the quantity matches")
     matched_cart_item: str | None = Field(default=None, description="The cart item that matched, if any")
-    matched_quantity: int | None = Field(default=None, description="The quantity found in cart")
-    requested_quantity: int = Field(default=1, description="The quantity that was requested")
+    matched_quantity: float | None = Field(default=None, description="The quantity found in cart")
+    requested_quantity: float = Field(default=1, description="The quantity that was requested")
     reasoning: str = Field(default="", description="Explanation of the judgment")
 
 
@@ -153,7 +156,7 @@ class CartJudgment(BaseModel):
     summary: str = Field(default="")
 
 
-LLM_JUDGE_PROMPT = '''You are a shopping cart verification judge. Your task is to compare a list of REQUESTED ITEMS against the ACTUAL CART CONTENTS and determine if each requested item was successfully added with the correct quantity.
+LLM_JUDGE_PROMPT = """You are a shopping cart verification judge. Your task is to compare a list of REQUESTED ITEMS against the ACTUAL CART CONTENTS and determine if each requested item was successfully added with the correct quantity.
 
 ## REQUESTED ITEMS:
 {requested_items}
@@ -164,16 +167,17 @@ LLM_JUDGE_PROMPT = '''You are a shopping cart verification judge. Your task is t
 ## INSTRUCTIONS:
 For each requested item, determine:
 
-1. **Found**: Is there a matching product in the cart? Use semantic matching - the product doesn't need to be an exact string match, but should be the same type of product.
+1. **Found**: Is there a matching product in the cart? Use semantic matching - the product doesn't need to be an exact string match, but should be the same type of product and brand name if specified.
    - "apples" matches "Naturally Imperfect Apples, 6 lb bag" ✓
    - "2% milk" matches "Beatrice 2% Milk, 4L" ✓
    - "apples" does NOT match "Apple Juice" ✗
    - "chicken breast" does NOT match "Chicken Wings" ✗
+   - "multigrain loaf" does NOT match "Promise Gluten Free - Multigrain Loaf (481 g)" ✗
 
 2. **Correct Quantity**: Does the quantity in the cart match what was requested?
    - If no quantity was specified in the request, assume quantity of 1
-   - "3 apples" requires quantity >= 3 in cart
-   - "milk" with no quantity requires quantity >= 1
+   - "3 apples" requires quantity = 3 in cart
+   - "milk" with no quantity requires quantity = 1
 
 ## OUTPUT FORMAT:
 Return a JSON object with this exact structure:
@@ -197,7 +201,7 @@ Return a JSON object with this exact structure:
 }}
 ```
 
-Return ONLY the JSON object, no other text.'''
+Return ONLY the JSON object, no other text."""
 
 
 def _create_judge_llm(llm_config: dict):
@@ -218,16 +222,20 @@ def _create_judge_llm(llm_config: dict):
 
     if provider == "openai":
         from langchain_openai import ChatOpenAI
+
         return ChatOpenAI(model=model, temperature=temperature)
     elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
+
         return ChatAnthropic(model=model, temperature=temperature)
     elif provider == "groq":
         from langchain_groq import ChatGroq
+
         return ChatGroq(model=model, temperature=temperature)
     else:
         # Default to OpenAI
         from langchain_openai import ChatOpenAI
+
         return ChatOpenAI(model=model, temperature=temperature)
 
 
@@ -277,22 +285,18 @@ async def judge_cart_contents(
     # Call the LLM
     try:
         response = await judge_llm.ainvoke([HumanMessage(content=prompt)])
-        response_text = response.content if hasattr(response, 'content') else str(response)
+        response_text = response.content if hasattr(response, "content") else str(response)
 
         # Extract JSON from response
-        json_match = re.search(r'\{[\s\S]*\}', response_text)
+        json_match = re.search(r"\{[\s\S]*\}", response_text)
         if json_match:
             judgment_data = json.loads(json_match.group())
             return CartJudgment.model_validate(judgment_data)
         else:
-            return CartJudgment(
-                summary=f"Failed to parse LLM response: {response_text[:200]}"
-            )
+            return CartJudgment(summary=f"Failed to parse LLM response: {response_text[:200]}")
 
     except Exception as e:
-        return CartJudgment(
-            summary=f"LLM judge error: {str(e)}"
-        )
+        return CartJudgment(summary=f"LLM judge error: {str(e)}")
 
 
 async def extract_cart_contents(

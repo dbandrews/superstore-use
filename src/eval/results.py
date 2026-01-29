@@ -200,6 +200,8 @@ class EvalResult(BaseModel):
     cart_items: list[CartItem] = Field(default_factory=list, description="Items found in cart")
     cart_verified: bool = Field(default=False, description="Whether cart was successfully verified")
     cart_raw_content: str | None = Field(default=None, description="Raw cart content extracted")
+    cart_extraction_error: str | None = Field(default=None, description="Error during cart extraction, if any")
+    judge_error: str | None = Field(default=None, description="Error from LLM judge, if any")
 
     # Timing metrics
     metrics: RunMetrics = Field(default_factory=lambda: RunMetrics(start_time=datetime.now()))
@@ -216,15 +218,23 @@ class EvalResult(BaseModel):
     error: str | None = Field(default=None, description="Error message if run failed")
 
     def calculate_success_rate(self) -> float:
-        """Calculate and update the success rate based on item results."""
+        """Calculate and update the success rate based on item results.
+
+        Takes into account cart extraction errors and judge errors when
+        determining overall status. If there was a critical error preventing
+        verification, status will be 'error' regardless of item statuses.
+        """
         if not self.item_results:
             self.success_rate = 0.0
         else:
             successes = sum(1 for r in self.item_results if r.status == "success")
             self.success_rate = successes / len(self.item_results)
 
-        # Update overall status
-        if self.success_rate == 1.0:
+        # Update overall status, considering errors
+        if self.error or self.cart_extraction_error or self.judge_error:
+            # There was a critical error during the run
+            self.status = "error"
+        elif self.success_rate == 1.0:
             self.status = "success"
         elif self.success_rate > 0:
             self.status = "partial"
@@ -239,9 +249,18 @@ class EvalResult(BaseModel):
             f"Evaluation: {self.run_name}",
             f"Status: {self.status.upper()}",
             f"Success Rate: {self.success_rate:.1%}",
-            "",
-            "Items:",
         ]
+
+        # Show any errors
+        if self.error:
+            lines.append(f"Error: {self.error}")
+        if self.cart_extraction_error:
+            lines.append(f"Cart Extraction Error: {self.cart_extraction_error}")
+        if self.judge_error:
+            lines.append(f"Judge Error: {self.judge_error}")
+
+        lines.append("")
+        lines.append("Items:")
 
         for result in self.item_results:
             status_icon = {

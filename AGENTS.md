@@ -194,6 +194,7 @@ Configuration is managed via **Hydra** (YAML files in `conf/` directory).
 - **Timing Metrics**: Track duration per item, steps taken, total time
 - **Cart Verification**: Opens cart after test to verify what was actually added
 - **Temporary Profiles**: Each run uses a fresh, isolated browser profile (no auth needed)
+- **Profile Browsing**: Launch browser with leftover temp profile to inspect cart state
 - **Cost Tracking**: Automatic token usage and cost tracking per item and run
 - **Result Export**: JSON output saved to Hydra output directory for analysis
 - **Hydra Config**: YAML-based config with composition and command-line overrides
@@ -212,7 +213,11 @@ uv run -m src.eval.cli llm=llama_70b
 uv run -m src.eval.cli 'items=[bread,eggs,butter]'
 
 # Run with visible browser (for debugging)
-uv run -m src.eval.cli browser=headed keep_profile=true
+# Profiles are kept by default for inspection
+uv run -m src.eval.cli browser=headed
+
+# Run and clean up temp profile afterward
+uv run -m src.eval.cli cleanup_profile=true
 
 # Use experiment preset
 uv run -m src.eval.cli +experiment=quick_test
@@ -237,6 +242,12 @@ uv run -m src.eval.cli view outputs/2026-01-27/12-00-00/eval_result.json
 
 # Compare multiple runs (shows costs, tokens, success rates)
 uv run -m src.eval.cli compare outputs/*/eval_result.json
+
+# Browse temp profile from previous eval run (inspect cart state)
+uv run -m src.eval.cli browse /tmp/eval-profile-abc123/profile
+
+# Browse with custom URL
+uv run -m src.eval.cli browse /tmp/eval-profile-abc123/profile https://www.realcanadiansuperstore.ca/
 ```
 
 ### Hydra Config Structure

@@ -97,9 +97,9 @@ def run_eval_hydra() -> None:
             result.to_file(result_path)
             print(f"\nResult saved to: {result_path}")
 
-            # Clean up temp profile unless keep_profile is set
-            keep_profile = OmegaConf.select(cfg, "keep_profile", default=False)
-            if not keep_profile and result.profile_dir:
+            # Clean up temp profile if cleanup_profile is set (defaults to false = keep profiles)
+            cleanup_profile = OmegaConf.select(cfg, "cleanup_profile", default=False)
+            if cleanup_profile and result.profile_dir:
                 cleanup_temp_profile(Path(result.profile_dir))
                 print("Cleaned up temp profile")
             elif result.profile_dir:
@@ -112,6 +112,15 @@ def run_eval_hydra() -> None:
             session_path = hydra_output_dir / "session.json"
             session.to_file(session_path)
             print(f"\nSession saved to: {session_path}")
+
+            # Clean up temp profiles if cleanup_profile is set (defaults to false = keep profiles)
+            cleanup_profile = OmegaConf.select(cfg, "cleanup_profile", default=False)
+            for result in session.results:
+                if cleanup_profile and result.profile_dir:
+                    cleanup_temp_profile(Path(result.profile_dir))
+                    print(f"Cleaned up temp profile: {result.profile_dir}")
+                elif result.profile_dir:
+                    print(f"Temp profile kept at: {result.profile_dir}")
 
     # Run Hydra
     hydra_main()
@@ -279,6 +288,49 @@ def list_runs(outputs_dir: str = "outputs", limit: int = 10) -> None:
     print(f"  uv run -m src.eval.cli compare <path1> <path2> ...")
 
 
+def browse_profile(profile_path: str, url: str | None = None) -> None:
+    """Launch a browser with an existing profile for inspection.
+
+    Args:
+        profile_path: Path to the browser profile directory (e.g., from an eval run)
+        url: Optional URL to navigate to (defaults to cart URL from config)
+    """
+    from playwright.sync_api import sync_playwright
+
+    from src.core.config import load_config
+
+    profile = Path(profile_path)
+    if not profile.exists():
+        print(f"Error: Profile directory not found: {profile_path}", file=sys.stderr)
+        sys.exit(1)
+
+    config = load_config()
+    target_url = url or f"{config.app.base_url}/cartReview"
+
+    print(f"\nLaunching browser with profile: {profile_path}")
+    print(f"Navigating to: {target_url}")
+    print("Close the browser window when done.\n")
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(profile),
+            headless=False,
+            args=["--disable-features=LockProfileCookieDatabase"],
+        )
+        page = context.new_page()
+        page.goto(target_url, wait_until="load")
+
+        # Wait for user to close the browser
+        try:
+            page.wait_for_event("close", timeout=0)
+        except Exception:
+            pass
+
+        context.close()
+
+    print("Browser closed.")
+
+
 def print_help() -> None:
     """Print help message for the CLI."""
     help_text = """
@@ -302,13 +354,14 @@ HYDRA OVERRIDES:
     'items=[a,b,c]'     Override items list
     max_steps=N         Override max steps
     dry_run=true        Print config without running
-    keep_profile=true   Keep temp browser profile after run
+    cleanup_profile=true  Remove temp browser profile after run (default: keep it)
 
 UTILITY COMMANDS:
     list-models         List available LLM configurations
     list-runs [DIR] [N] List recent N evaluation runs from outputs directory
     view FILE           View results from a previous run
     compare FILE...     Compare multiple evaluation results (with costs/tokens)
+    browse PATH [URL]   Launch browser with temp profile from eval run
 
 EXAMPLES:
     # Run with default config
@@ -331,6 +384,9 @@ EXAMPLES:
 
     # View results
     uv run -m src.eval.cli view ./eval_results/eval_result.json
+
+    # Browse temp profile from eval run
+    uv run -m src.eval.cli browse /tmp/eval-profile-abc123/profile
 """
     print(help_text)
 
@@ -363,6 +419,16 @@ def main() -> None:
             outputs_dir = sys.argv[2] if len(sys.argv) > 2 else "outputs"
             limit = int(sys.argv[3]) if len(sys.argv) > 3 else 10
             list_runs(outputs_dir, limit)
+            return
+
+        if cmd == "browse":
+            if len(sys.argv) < 3:
+                print("Error: browse requires a profile path", file=sys.stderr)
+                print("Usage: uv run -m src.eval.cli browse <profile_path> [url]", file=sys.stderr)
+                sys.exit(1)
+            profile_path = sys.argv[2]
+            url = sys.argv[3] if len(sys.argv) > 3 else None
+            browse_profile(profile_path, url)
             return
 
         # Show custom help for our CLI before falling through to Hydra

@@ -22,4 +22,7 @@ timeout_seconds: 300.0
 
 # Runtime options (not part of EvalConfig, used by CLI)
 dry_run: false
-keep_profile: false
+# Whether to remove temporary browser profiles after evaluation
+# Set to false (default) to keep profiles for inspection
+# Set to true to clean up temp profiles
+cleanup_profile: false

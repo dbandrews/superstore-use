@@ -115,6 +115,9 @@ uv run -m src.eval.cli browser=headed
 
 # Sweep across LLMs
 uv run -m src.eval.cli --multirun llm=gpt4,llama_70b
+
+# Browse temp profile from previous run (inspect cart state)
+uv run -m src.eval.cli browse /tmp/eval-profile-abc123/profile
 ```
 
 ### Configuration
@@ -174,6 +177,7 @@ uv run -m src.eval.cli                 # Run eval with default config
 uv run -m src.eval.cli llm=llama_70b   # Use different LLM
 uv run -m src.eval.cli browser=headed  # Visible browser for debugging
 uv run -m src.eval.cli --cfg job       # View resolved config
+uv run -m src.eval.cli browse <path>   # Browse temp profile from eval run
 
 # Modal
 uv run modal deploy modal/app.py     # Deploy to cloud
