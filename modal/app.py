@@ -141,6 +141,9 @@ chat_image = (
         "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
         "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
         "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
+        # Navigation timeouts - default 15s/10s is too short for slow sites
+        "TIMEOUT_NavigateToUrlEvent": str(_config.browser.timeout_navigate_to_url),
+        "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
     cpu=2,
@@ -297,6 +300,9 @@ def login_remote_streaming():
         "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
         "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
         "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
+        # Navigation timeouts - default 15s/10s is too short for slow sites
+        "TIMEOUT_NavigateToUrlEvent": str(_config.browser.timeout_navigate_to_url),
+        "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
     cpu=2,
@@ -478,6 +484,9 @@ def add_item_remote_streaming(item: str, index: int):
         "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
         "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
         "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
+        # Navigation timeouts - default 15s/10s is too short for slow sites
+        "TIMEOUT_NavigateToUrlEvent": str(_config.browser.timeout_navigate_to_url),
+        "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
     cpu=2,
