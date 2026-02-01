@@ -28,6 +28,9 @@ stealth_args = [
 timeout_browser_start = 120
 timeout_browser_launch = 120
 timeout_browser_state_request = 120
+# Navigation timeouts - default 15s/10s in browser-use is too short for slow sites
+timeout_navigate_to_url = 60
+timeout_switch_tab = 30
 
 # Local development settings
 [browser.local]
