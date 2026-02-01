@@ -254,11 +254,26 @@ function displayJobState(job, progressDiv, itemsProcessed) {
             itemsProcessed.push({ item: p.item, status: p.status, icon: icon, steps: p.steps || 0 });
         });
     }
-    // Restore items_in_progress
+    // Restore login_progress from job state
+    if (job.login_progress) {
+        loginProgress = {
+            step: job.login_progress.step || 0,
+            thinking: job.login_progress.thinking || null,
+            next_goal: job.login_progress.next_goal || null
+        };
+    } else {
+        loginProgress = null;
+    }
+    // Restore items_in_progress with thinking/next_goal
     itemStepProgress = {};
     if (job.items_in_progress) {
         for (const [item, progress] of Object.entries(job.items_in_progress)) {
-            itemStepProgress[item] = { step: progress.step || 0, action: progress.action || '...', thinking: null, next_goal: null };
+            itemStepProgress[item] = {
+                step: progress.step || 0,
+                action: progress.action || '...',
+                thinking: progress.thinking || null,
+                next_goal: progress.next_goal || null
+            };
         }
     }
     updateProgressDisplay(progressDiv, itemsProcessed);
