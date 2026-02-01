@@ -526,16 +526,15 @@ def view_cart_remote_streaming():
             )
 
         try:
-            cart_url = f"{config.app.base_url}/cartReview"
-
             try:
                 task = config.load_prompt(
                     "view_cart",
-                    cart_url=cart_url,
+                    base_url=config.app.base_url,
                 )
             except FileNotFoundError:
                 task = f"""
-                Navigate to {cart_url} and extract all items in the shopping cart.
+                Go to {config.app.base_url} and click on the cart icon to view the shopping cart.
+                Extract all items in the shopping cart.
                 Return a bullet point list of all items with quantities and prices.
                 If the cart is empty, return "Your cart is empty."
                 """
