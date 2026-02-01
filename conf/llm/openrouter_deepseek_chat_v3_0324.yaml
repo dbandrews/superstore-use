@@ -1,0 +1,8 @@
+# DeepSeek: DeepSeek V3 0324
+# $0.1900/M input, $0.8700/M output, 163,840 context
+model: deepseek/deepseek-chat-v3-0324
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

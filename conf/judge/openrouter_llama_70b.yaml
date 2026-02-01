@@ -1,0 +1,7 @@
+# Llama 3.3 70B via OpenRouter for judge
+model: meta-llama/llama-3.3-70b-instruct
+provider: openrouter
+temperature: 0.0
+enabled: true
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

@@ -1,0 +1,8 @@
+# GPT-OSS 20B via OpenRouter - good value medium model
+# $0.00002/1K tokens, 131k context
+model: openai/gpt-oss-20b
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

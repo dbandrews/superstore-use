@@ -1,0 +1,8 @@
+# Mistral: Ministral 8B
+# $0.1000/M input, $0.1000/M output, 131,072 context
+model: mistralai/ministral-8b
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

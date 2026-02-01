@@ -1,0 +1,8 @@
+# NVIDIA: Nemotron Nano 12B 2 VL
+# $0.2000/M input, $0.6000/M output, 131,072 context
+model: nvidia/nemotron-nano-12b-v2-vl
+provider: openrouter
+temperature: 0.0
+use_vision: true
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

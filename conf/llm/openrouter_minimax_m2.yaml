@@ -1,0 +1,8 @@
+# MiniMax: MiniMax M2
+# $0.2000/M input, $1.0000/M output, 196,608 context
+model: minimax/minimax-m2
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

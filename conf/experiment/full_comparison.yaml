@@ -9,9 +9,14 @@ defaults:
 
 name: full_comparison
 items:
-  - apples
-  - milk
-  - bread
+  # Easy
+  - 2% milk
+  - 6 bananas
+  # Medium
+  - Kraft mac and cheese
+  - Heinz ketchup
+  # Hard
+  - 4 Honeycrisp apples
 
 max_steps: 30
 timeout_seconds: 300.0

@@ -1,0 +1,8 @@
+# Qwen3 32B via OpenRouter - strong general model
+# $0.00008/1K tokens, 40k context
+model: qwen/qwen3-32b
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

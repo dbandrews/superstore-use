@@ -1,0 +1,8 @@
+# ByteDance Seed: Seed 1.6 Flash
+# $0.0750/M input, $0.3000/M output, 262,144 context
+model: bytedance-seed/seed-1.6-flash
+provider: openrouter
+temperature: 0.0
+use_vision: true
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

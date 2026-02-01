@@ -1,5 +1,0 @@
-model: gpt-4o
-provider: openai
-temperature: 0.0
-prompt_template: null
-enabled: false

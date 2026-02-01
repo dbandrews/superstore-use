@@ -1,0 +1,8 @@
+# Qwen: Qwen3 Next 80B A3B Instruct
+# $0.0900/M input, $1.1000/M output, 262,144 context
+model: qwen/qwen3-next-80b-a3b-instruct
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

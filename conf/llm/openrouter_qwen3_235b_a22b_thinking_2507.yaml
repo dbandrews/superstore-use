@@ -1,0 +1,8 @@
+# Qwen: Qwen3 235B A22B Thinking 2507
+# $0.1100/M input, $0.6000/M output, 262,144 context
+model: qwen/qwen3-235b-a22b-thinking-2507
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

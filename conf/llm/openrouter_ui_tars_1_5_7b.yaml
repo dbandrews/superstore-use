@@ -1,0 +1,8 @@
+# ByteDance: UI-TARS 7B
+# $0.1000/M input, $0.2000/M output, 128,000 context
+model: bytedance/ui-tars-1.5-7b
+provider: openrouter
+temperature: 0.0
+use_vision: true
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

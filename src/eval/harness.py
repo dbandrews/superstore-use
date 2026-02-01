@@ -44,6 +44,8 @@ def get_llm_instance(llm_config: LLMConfig):
     Returns:
         LLM instance compatible with browser-use Agent
     """
+    import os
+
     # Use browser-use's model wrappers for compatibility
     if llm_config.provider == "groq":
         from browser_use import ChatGroq
@@ -61,6 +63,23 @@ def get_llm_instance(llm_config: LLMConfig):
         from browser_use import ChatAnthropic
         return ChatAnthropic(
             model=llm_config.model,
+            temperature=llm_config.temperature,
+        )
+    elif llm_config.provider == "openrouter":
+        # OpenRouter uses OpenAI-compatible API with custom base URL
+        # Note: Free models (with :free suffix) don't work with browser-use because
+        # free tier providers don't support structured output (response_format)
+        # which browser-use requires. Use paid tier models instead.
+        from browser_use import ChatOpenAI
+        api_key_env = llm_config.api_key_env or "OPENROUTER_API_KEY"
+        api_key = os.getenv(api_key_env)
+        if not api_key:
+            raise ValueError(f"OpenRouter API key not found in environment variable: {api_key_env}")
+        base_url = llm_config.base_url or "https://openrouter.ai/api/v1"
+        return ChatOpenAI(
+            model=llm_config.model,
+            base_url=base_url,
+            api_key=api_key,
             temperature=llm_config.temperature,
         )
     else:
@@ -404,6 +423,8 @@ class EvalHarness:
                     "provider": run.judge.provider,
                     "model": run.judge.model,
                     "temperature": run.judge.temperature,
+                    "base_url": getattr(run.judge, "base_url", None),
+                    "api_key_env": getattr(run.judge, "api_key_env", None),
                 }
 
                 # Get custom prompt template if configured

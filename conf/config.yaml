@@ -1,5 +1,5 @@
 defaults:
-  - llm: gpt4
+  - llm: gpt4o
   - browser: headless
   - prompt: default
   - judge: default
@@ -7,17 +7,23 @@ defaults:
 
 name: eval
 items:
-  - 6 x ambrosia apples
-  - 1 liter 2% milk organic
-  - chicken breast club pack
-  - kettle chips honey dijon
-  - 1 loaf of promise gluten free bread
+  # Easy - basic items with quantities
+  - 6 bananas
+  - oat milk unsweetened 1 L
+  - 2 lb bag of carrots
+  - 2 cans of Campbell's tomato soup
+  - 10 lb bag of russet potatoes
+  - Kellogg's Frosted Flakes cereal
+  - 4 Honeycrisp apples
+  - French's yellow mustard
+  - 2 boneless skinless chicken breasts
+  - Smartwater 1L bottle
 
 base_url: https://www.realcanadiansuperstore.ca/en
 cart_url: https://www.realcanadiansuperstore.ca/en/cartReview
 output_dir: ./eval_results
 
-max_steps: 30
+max_steps: 15
 timeout_seconds: 300.0
 
 # Runtime options (not part of EvalConfig, used by CLI)

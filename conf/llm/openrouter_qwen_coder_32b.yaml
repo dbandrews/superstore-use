@@ -1,0 +1,8 @@
+# Qwen 2.5 Coder 32B via OpenRouter - best for code tasks
+# $0.00003/1K tokens, 32k context
+model: qwen/qwen-2.5-coder-32b-instruct
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

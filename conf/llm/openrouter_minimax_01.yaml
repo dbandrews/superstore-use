@@ -1,0 +1,8 @@
+# MiniMax: MiniMax-01
+# $0.2000/M input, $1.1000/M output, 1,000,192 context
+model: minimax/minimax-01
+provider: openrouter
+temperature: 0.0
+use_vision: true
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

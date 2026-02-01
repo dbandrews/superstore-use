@@ -25,9 +25,11 @@ class LLMConfig:
     """LLM configuration for an evaluation run."""
 
     model: str = "gpt-4.1"
-    provider: str = "groq"  # groq, openai, anthropic
+    provider: str = "groq"  # groq, openai, anthropic, openrouter
     temperature: float = 0.0
     use_vision: bool = False
+    base_url: str | None = None  # Custom base URL (e.g., OpenRouter)
+    api_key_env: str | None = None  # Env var name for API key (e.g., OPENROUTER_API_KEY)
 
 
 @dataclass
@@ -58,10 +60,12 @@ class JudgeConfig:
     """LLM-as-a-judge configuration for evaluating cart contents."""
 
     model: str = "gpt-4o"
-    provider: str = "openai"  # groq, openai, anthropic
+    provider: str = "openai"  # groq, openai, anthropic, openrouter
     temperature: float = 0.0
     prompt_template: str | None = None
     enabled: bool = True
+    base_url: str | None = None  # Custom base URL (e.g., OpenRouter)
+    api_key_env: str | None = None  # Env var name for API key (e.g., OPENROUTER_API_KEY)
 
 
 @dataclass

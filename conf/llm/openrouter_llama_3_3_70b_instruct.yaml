@@ -1,0 +1,8 @@
+# Meta: Llama 3.3 70B Instruct
+# $0.1000/M input, $0.3200/M output, 131,072 context
+model: meta-llama/llama-3.3-70b-instruct
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

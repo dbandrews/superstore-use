@@ -174,10 +174,9 @@ For each requested item, determine:
    - "chicken breast" does NOT match "Chicken Wings" ✗
    - "multigrain loaf" does NOT match "Promise Gluten Free - Multigrain Loaf (481 g)" ✗
 
-2. **Correct Quantity**: Does the quantity in the cart match what was requested?
+2. **Correct Quantity**: Does the quantity in the cart exactly match what was requested and not more or less?
    - If no quantity was specified in the request, assume quantity of 1
    - "3 apples" requires quantity = 3 in cart
-   - "milk" with no quantity requires quantity = 1
 
 ## OUTPUT FORMAT:
 Return a JSON object with this exact structure:
@@ -212,10 +211,13 @@ def _create_judge_llm(llm_config: dict):
 
     Args:
         llm_config: Dict with 'provider', 'model', 'temperature' keys
+            Optional: 'base_url', 'api_key_env' for custom providers like OpenRouter
 
     Returns:
         Langchain chat model instance
     """
+    import os
+
     provider = llm_config.get("provider", "openai")
     model = llm_config.get("model", "gpt-4o")
     temperature = llm_config.get("temperature", 0.0)
@@ -232,6 +234,21 @@ def _create_judge_llm(llm_config: dict):
         from langchain_groq import ChatGroq
 
         return ChatGroq(model=model, temperature=temperature)
+    elif provider == "openrouter":
+        from langchain_openai import ChatOpenAI
+
+        # OpenRouter uses OpenAI-compatible API with custom base URL
+        api_key_env = llm_config.get("api_key_env") or "OPENROUTER_API_KEY"
+        api_key = os.getenv(api_key_env)
+        if not api_key:
+            raise ValueError(f"OpenRouter API key not found in environment variable: {api_key_env}")
+        base_url = llm_config.get("base_url") or "https://openrouter.ai/api/v1"
+        return ChatOpenAI(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=temperature,
+        )
     else:
         # Default to OpenAI
         from langchain_openai import ChatOpenAI

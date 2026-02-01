@@ -1,0 +1,8 @@
+# Meta: Llama 4 Maverick
+# $0.1500/M input, $0.6000/M output, 1,048,576 context
+model: meta-llama/llama-4-maverick
+provider: openrouter
+temperature: 0.0
+use_vision: true
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

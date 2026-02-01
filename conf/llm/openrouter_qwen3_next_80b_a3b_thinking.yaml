@@ -1,0 +1,8 @@
+# Qwen: Qwen3 Next 80B A3B Thinking
+# $0.1500/M input, $1.2000/M output, 128,000 context
+model: qwen/qwen3-next-80b-a3b-thinking
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

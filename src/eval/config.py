@@ -22,7 +22,7 @@ class LLMConfig(BaseModel):
         default="openai/gpt-oss-120b",
         description="Model identifier (e.g., 'gpt-4.1', 'openai/gpt-oss-120b', 'llama-3.3-70b-versatile')",
     )
-    provider: Literal["groq", "openai", "anthropic"] = Field(
+    provider: Literal["groq", "openai", "anthropic", "openrouter"] = Field(
         default="groq",
         description="LLM provider to use",
     )
@@ -33,6 +33,14 @@ class LLMConfig(BaseModel):
     use_vision: bool = Field(
         default=False,
         description="Whether to enable vision capabilities",
+    )
+    base_url: str | None = Field(
+        default=None,
+        description="Custom base URL for API (e.g., OpenRouter). If None, uses provider default.",
+    )
+    api_key_env: str | None = Field(
+        default=None,
+        description="Environment variable name for API key (e.g., 'OPENROUTER_API_KEY'). If None, uses provider default.",
     )
 
     def get_display_name(self) -> str:
@@ -47,7 +55,7 @@ class JudgeConfig(BaseModel):
         default="gpt-4o",
         description="Model identifier for the judge LLM",
     )
-    provider: Literal["groq", "openai", "anthropic"] = Field(
+    provider: Literal["groq", "openai", "anthropic", "openrouter"] = Field(
         default="openai",
         description="LLM provider for the judge",
     )
@@ -62,6 +70,14 @@ class JudgeConfig(BaseModel):
     enabled: bool = Field(
         default=True,
         description="Whether to run LLM judge evaluation",
+    )
+    base_url: str | None = Field(
+        default=None,
+        description="Custom base URL for API (e.g., OpenRouter). If None, uses provider default.",
+    )
+    api_key_env: str | None = Field(
+        default=None,
+        description="Environment variable name for API key (e.g., 'OPENROUTER_API_KEY'). If None, uses provider default.",
     )
 
     def get_display_name(self) -> str:

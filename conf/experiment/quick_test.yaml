@@ -8,7 +8,7 @@ defaults:
 
 name: quick_test
 items:
-  - apples
+  - dozen large eggs
 
 max_steps: 20
 timeout_seconds: 180.0
