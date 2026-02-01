@@ -769,6 +769,7 @@ def flask_app():
             "updated_at": time.time(),
             "items_processed": [],
             "items_in_progress": {},
+            "login_progress": None,
             "final_message": None,
             "error": None,
         }
@@ -783,13 +784,25 @@ def flask_app():
             event_type = event.get("type", "")
             job["updated_at"] = time.time()
 
-            if event_type == "item_start":
+            if event_type == "login_start":
+                job["login_progress"] = {"step": 0, "thinking": None, "next_goal": None}
+            elif event_type == "login_step":
+                job["login_progress"] = {
+                    "step": event.get("step", 0),
+                    "thinking": event.get("thinking"),
+                    "next_goal": event.get("next_goal"),
+                }
+            elif event_type == "login_complete":
+                job["login_progress"] = None
+            elif event_type == "item_start":
                 job["items_in_progress"][event["item"]] = {"step": 0, "action": "Starting..."}
             elif event_type == "step":
                 if event.get("item") in job["items_in_progress"]:
                     job["items_in_progress"][event["item"]] = {
                         "step": event.get("step", 0),
                         "action": event.get("action", "..."),
+                        "thinking": event.get("thinking"),
+                        "next_goal": event.get("next_goal"),
                     }
             elif event_type == "item_complete":
                 item_name = event.get("item")
