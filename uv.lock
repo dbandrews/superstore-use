@@ -1214,6 +1214,19 @@ wheels = [
 ]
 
 [[package]]
+name = "hydra-joblib-launcher"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "hydra-core" },
+    { name = "joblib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/94/6d81cd0858295b6efaa420624f120a594a90e54f36b165de8b47b62e0f76/hydra-joblib-launcher-1.2.0.tar.gz", hash = "sha256:b4dc8b990221a0df048c094954356c6532585557e708e8198c46a877b379a6d5", size = 4647 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/50/40613fdf65f9227bc0b073c1ee9db2e2298f7b6cd248e8b4825eedc292eb/hydra_joblib_launcher-1.2.0-py3-none-any.whl", hash = "sha256:57bfd042b015056157297de93e8ec1c6bc75fd39bd3b300e1599db0c5d992eee", size = 5203 },
+]
+
+[[package]]
 name = "hyperframe"
 version = "6.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1394,6 +1407,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/ab/eb06ca556b2551d41de7d03bf2ee24285fa3d0c58c5f8d95c64c9c3281b1/jiter-0.11.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:fb4790497369d134a07fc763cc88888c46f734abdd66f9fdf7865038bf3a8f40", size = 313405 },
     { url = "https://files.pythonhosted.org/packages/af/22/7ab7b4ec3a1c1f03aef376af11d23b05abcca3fb31fbca1e7557053b1ba2/jiter-0.11.0-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6e2bbf24f16ba5ad4441a9845e40e4ea0cb9eed00e76ba94050664ef53ef4406", size = 347102 },
     { url = "https://files.pythonhosted.org/packages/70/f3/ce100253c80063a7b8b406e1d1562657fd4b9b4e1b562db40e68645342fb/jiter-0.11.0-graalpy311-graalpy242_311_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:902b43386c04739229076bd1c4c69de5d115553d982ab442a8ae82947c72ede7", size = 336380 },
+]
+
+[[package]]
+name = "joblib"
+version = "1.5.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/f2/d34e8b3a08a9cc79a50b2208a93dce981fe615b64d5a4d4abee421d898df/joblib-1.5.3.tar.gz", hash = "sha256:8561a3269e6801106863fd0d6d84bb737be9e7631e33aaed3fb9ce5953688da3", size = 331603 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/91/984aca2ec129e2757d1e4e3c81c3fcda9d0f85b74670a094cc443d9ee949/joblib-1.5.3-py3-none-any.whl", hash = "sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713", size = 309071 },
 ]
 
 [[package]]
@@ -6329,6 +6351,7 @@ dependencies = [
     { name = "browser-use" },
     { name = "flask" },
     { name = "hydra-core" },
+    { name = "hydra-joblib-launcher" },
     { name = "ipykernel" },
     { name = "langchain-core" },
     { name = "langchain-groq" },
@@ -6353,6 +6376,7 @@ requires-dist = [
     { name = "browser-use", specifier = ">=0.8" },
     { name = "flask", specifier = ">=3.0.0" },
     { name = "hydra-core", specifier = ">=1.3.0" },
+    { name = "hydra-joblib-launcher", specifier = ">=1.2.0" },
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langchain-groq", specifier = ">=0.3.0" },

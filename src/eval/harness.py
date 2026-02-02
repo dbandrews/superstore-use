@@ -267,17 +267,11 @@ class EvalHarness:
 
             steps_taken = step_count[0]
 
-            # Extract token usage from history
-            # browser-use UsageSummary uses: total_prompt_tokens, total_completion_tokens, total_cost
+            # Extract token usage from history using the comprehensive TokenUsage model
             if history and hasattr(history, "usage") and history.usage:
-                usage = history.usage
-                token_usage = TokenUsage(
-                    input_tokens=getattr(usage, "total_prompt_tokens", 0) or 0,
-                    output_tokens=getattr(usage, "total_completion_tokens", 0) or 0,
-                )
-                cost = getattr(usage, "total_cost", None)
-                if cost is not None and cost > 0:
-                    estimated_cost_usd = cost
+                token_usage = TokenUsage.from_usage_summary(history.usage)
+                if token_usage.total_cost > 0:
+                    estimated_cost_usd = token_usage.total_cost
 
             # Check success if not timed out
             if status != "timeout":

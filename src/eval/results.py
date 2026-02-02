@@ -15,21 +15,101 @@ from pydantic import BaseModel, Field
 
 
 class TokenUsage(BaseModel):
-    """Token usage tracking for LLM calls."""
+    """Token usage tracking for LLM calls.
 
-    input_tokens: int = Field(default=0, description="Total input tokens consumed")
-    output_tokens: int = Field(default=0, description="Total output tokens generated")
+    Mirrors the browser-use UsageSummary structure for comprehensive tracking
+    including cached tokens, costs, and per-model breakdowns.
+    """
+
+    # Token counts
+    input_tokens: int = Field(default=0, description="Total input/prompt tokens consumed")
+    output_tokens: int = Field(default=0, description="Total output/completion tokens generated")
+    cached_tokens: int = Field(default=0, description="Cached input tokens (reduced cost)")
+
+    # Cost breakdown
+    input_cost: float = Field(default=0.0, description="Cost for input tokens in USD")
+    output_cost: float = Field(default=0.0, description="Cost for output tokens in USD")
+    cached_cost: float = Field(default=0.0, description="Cost for cached tokens in USD")
+    total_cost: float = Field(default=0.0, description="Total cost in USD")
+
+    # Metadata
+    entry_count: int = Field(default=0, description="Number of LLM calls")
+    by_model: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Token usage breakdown by model",
+    )
 
     @property
     def total_tokens(self) -> int:
         """Total tokens (input + output)."""
         return self.input_tokens + self.output_tokens
 
+    @property
+    def non_cached_input_tokens(self) -> int:
+        """Input tokens that were not cached (full price)."""
+        return self.input_tokens - self.cached_tokens
+
     def __add__(self, other: "TokenUsage") -> "TokenUsage":
         """Add two TokenUsage instances together."""
+        # Merge by_model dicts
+        merged_by_model = dict(self.by_model)
+        for model, usage in other.by_model.items():
+            if model in merged_by_model:
+                # Sum the values for existing models
+                existing = merged_by_model[model]
+                merged_by_model[model] = {
+                    k: existing.get(k, 0) + usage.get(k, 0)
+                    for k in set(existing.keys()) | set(usage.keys())
+                }
+            else:
+                merged_by_model[model] = usage
+
         return TokenUsage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
+            input_cost=self.input_cost + other.input_cost,
+            output_cost=self.output_cost + other.output_cost,
+            cached_cost=self.cached_cost + other.cached_cost,
+            total_cost=self.total_cost + other.total_cost,
+            entry_count=self.entry_count + other.entry_count,
+            by_model=merged_by_model,
+        )
+
+    @classmethod
+    def from_usage_summary(cls, usage) -> "TokenUsage":
+        """Create TokenUsage from browser-use UsageSummary.
+
+        Args:
+            usage: browser-use UsageSummary object
+
+        Returns:
+            TokenUsage instance with all available data
+        """
+        if usage is None:
+            return cls()
+
+        # Extract by_model data if available
+        by_model = {}
+        if hasattr(usage, "by_model") and usage.by_model:
+            for model, model_usage in usage.by_model.items():
+                by_model[model] = {
+                    "input_tokens": getattr(model_usage, "total_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(model_usage, "total_completion_tokens", 0) or 0,
+                    "cached_tokens": getattr(model_usage, "total_prompt_cached_tokens", 0) or 0,
+                    "total_cost": getattr(model_usage, "total_cost", 0) or 0,
+                }
+
+        return cls(
+            input_tokens=getattr(usage, "total_prompt_tokens", 0) or 0,
+            output_tokens=getattr(usage, "total_completion_tokens", 0) or 0,
+            cached_tokens=getattr(usage, "total_prompt_cached_tokens", 0) or 0,
+            input_cost=getattr(usage, "total_prompt_cost", 0) or 0,
+            output_cost=getattr(usage, "total_completion_cost", 0) or 0,
+            cached_cost=getattr(usage, "total_prompt_cached_cost", 0) or 0,
+            total_cost=getattr(usage, "total_cost", 0) or 0,
+            entry_count=getattr(usage, "entry_count", 0) or 0,
+            by_model=by_model,
         )
 
 
@@ -290,16 +370,39 @@ class EvalResult(BaseModel):
                 lines.append(f"Avg per Item: {self.metrics.avg_item_duration:.1f}s")
 
         # Cost metrics
-        if self.cost_metrics.token_usage.total_tokens > 0:
+        usage = self.cost_metrics.token_usage
+        if usage.total_tokens > 0:
             lines.append("")
             lines.append("Token Usage:")
-            lines.append(f"  Input: {self.cost_metrics.token_usage.input_tokens:,}")
-            lines.append(f"  Output: {self.cost_metrics.token_usage.output_tokens:,}")
-            lines.append(f"  Total: {self.cost_metrics.token_usage.total_tokens:,}")
+            lines.append(f"  Input:  {usage.input_tokens:,}" + (f" ({usage.cached_tokens:,} cached)" if usage.cached_tokens > 0 else ""))
+            lines.append(f"  Output: {usage.output_tokens:,}")
+            lines.append(f"  Total:  {usage.total_tokens:,}")
             if self.cost_metrics.avg_tokens_per_item:
                 lines.append(f"  Avg per Item: {self.cost_metrics.avg_tokens_per_item:,}")
-            if self.cost_metrics.estimated_cost_usd is not None:
+
+            # Show cost breakdown if available
+            if usage.total_cost > 0:
+                lines.append("")
+                lines.append("Cost Breakdown:")
+                if usage.input_cost > 0:
+                    lines.append(f"  Input:  ${usage.input_cost:.6f}")
+                if usage.cached_cost > 0:
+                    lines.append(f"  Cached: ${usage.cached_cost:.6f}")
+                if usage.output_cost > 0:
+                    lines.append(f"  Output: ${usage.output_cost:.6f}")
+                lines.append(f"  Total:  ${usage.total_cost:.4f}")
+            elif self.cost_metrics.estimated_cost_usd is not None:
                 lines.append(f"  Estimated Cost: ${self.cost_metrics.estimated_cost_usd:.4f}")
+
+            # Show per-model breakdown if multiple models used
+            if usage.by_model and len(usage.by_model) > 1:
+                lines.append("")
+                lines.append("By Model:")
+                for model, model_usage in usage.by_model.items():
+                    model_tokens = model_usage.get("input_tokens", 0) + model_usage.get("output_tokens", 0)
+                    model_cost = model_usage.get("total_cost", 0)
+                    cost_str = f", ${model_cost:.4f}" if model_cost > 0 else ""
+                    lines.append(f"  {model}: {model_tokens:,} tokens{cost_str}")
 
         return "\n".join(lines)
 
@@ -397,11 +500,33 @@ class EvalSession(BaseModel):
         if total_usage.total_tokens > 0:
             lines.append("")
             lines.append("Total Token Usage:")
-            lines.append(f"  Input: {total_usage.input_tokens:,}")
+            lines.append(f"  Input:  {total_usage.input_tokens:,}" + (f" ({total_usage.cached_tokens:,} cached)" if total_usage.cached_tokens > 0 else ""))
             lines.append(f"  Output: {total_usage.output_tokens:,}")
-            lines.append(f"  Total: {total_usage.total_tokens:,}")
-            if self.total_estimated_cost_usd is not None:
+            lines.append(f"  Total:  {total_usage.total_tokens:,}")
+
+            # Show cost breakdown if available
+            if total_usage.total_cost > 0:
+                lines.append("")
+                lines.append("Cost Breakdown:")
+                if total_usage.input_cost > 0:
+                    lines.append(f"  Input:  ${total_usage.input_cost:.6f}")
+                if total_usage.cached_cost > 0:
+                    lines.append(f"  Cached: ${total_usage.cached_cost:.6f}")
+                if total_usage.output_cost > 0:
+                    lines.append(f"  Output: ${total_usage.output_cost:.6f}")
+                lines.append(f"  Total:  ${total_usage.total_cost:.4f}")
+            elif self.total_estimated_cost_usd is not None:
                 lines.append(f"  Estimated Cost: ${self.total_estimated_cost_usd:.4f}")
+
+            # Show per-model breakdown
+            if total_usage.by_model:
+                lines.append("")
+                lines.append("By Model:")
+                for model, model_usage in total_usage.by_model.items():
+                    model_tokens = model_usage.get("input_tokens", 0) + model_usage.get("output_tokens", 0)
+                    model_cost = model_usage.get("total_cost", 0)
+                    cost_str = f", ${model_cost:.4f}" if model_cost > 0 else ""
+                    lines.append(f"  {model}: {model_tokens:,} tokens{cost_str}")
 
         return "\n".join(lines)
 

@@ -65,7 +65,8 @@ See `.env.example` or set:
 uv run -m src.eval.cli                           # Default config
 uv run -m src.eval.cli llm=llama_70b             # Override LLM
 uv run -m src.eval.cli browser=headed            # Visible browser
-uv run -m src.eval.cli --multirun llm=gpt41,llama_70b  # Compare models
+uv run -m src.eval.cli --multirun llm=gpt41,llama_70b  # Compare models (sequential)
+uv run -m src.eval.cli --multirun hydra/launcher=joblib llm=gpt41,llama_70b  # Compare models (parallel)
 uv run -m src.eval.cli list-models               # Available LLMs
 uv run -m src.eval.cli list-runs                 # Recent runs
 uv run -m src.eval.cli --help                    # Full options

@@ -17,8 +17,11 @@ Usage:
     # Use headed browser
     uv run -m src.eval.cli browser=headed
 
-    # Multirun across LLMs
+    # Multirun across LLMs (sequential)
     uv run -m src.eval.cli --multirun llm=gpt4,llama_70b
+
+    # Multirun across LLMs (parallel)
+    uv run -m src.eval.cli --multirun hydra/launcher=joblib llm=gpt4,llama_70b
 
     # Use experiment preset
     uv run -m src.eval.cli +experiment=quick_test
@@ -183,20 +186,27 @@ def compare_results(result_files: list[str]) -> None:
         result = EvalResult.from_file(path)
         results.append((path, result))
 
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 110)
     print("COMPARISON SUMMARY")
-    print("=" * 90)
-    print(f"{'Run Name':<25} {'LLM':<20} {'Status':<10} {'Success':<10} {'Tokens':<12} {'Cost':<10} {'Duration':<10}")
-    print("-" * 90)
+    print("=" * 110)
+    print(f"{'Run Name':<25} {'LLM':<20} {'Status':<10} {'Success':<8} {'In/Out/Cached':<20} {'Cost':<12} {'Duration':<10}")
+    print("-" * 110)
 
     for path, result in results:
         duration = f"{result.metrics.total_duration_seconds:.1f}s" if result.metrics.total_duration_seconds else "N/A"
         llm = result.config_summary.get("llm_model", "unknown")[:18]
-        tokens = f"{result.cost_metrics.token_usage.total_tokens:,}" if result.cost_metrics.token_usage.total_tokens > 0 else "N/A"
-        cost = f"${result.cost_metrics.estimated_cost_usd:.4f}" if result.cost_metrics.estimated_cost_usd else "N/A"
-        print(f"{result.run_name:<25} {llm:<20} {result.status:<10} {result.success_rate:.0%}       {tokens:<12} {cost:<10} {duration}")
+        usage = result.cost_metrics.token_usage
+        if usage.total_tokens > 0:
+            cached_str = f"+{usage.cached_tokens//1000}k" if usage.cached_tokens > 0 else ""
+            tokens = f"{usage.input_tokens//1000}k/{usage.output_tokens//1000}k{cached_str}"
+        else:
+            tokens = "N/A"
+        # Prefer total_cost from token usage (more detailed), fall back to estimated_cost_usd
+        cost = usage.total_cost if usage.total_cost > 0 else result.cost_metrics.estimated_cost_usd
+        cost_str = f"${cost:.4f}" if cost else "N/A"
+        print(f"{result.run_name:<25} {llm:<20} {result.status:<10} {result.success_rate:.0%}      {tokens:<20} {cost_str:<12} {duration}")
 
-    print("=" * 90)
+    print("=" * 110)
 
     # Show per-item comparison with costs
     print("\nPer-Item Breakdown:")
@@ -209,8 +219,14 @@ def compare_results(result_files: list[str]) -> None:
         for path, result in results:
             item_result = next((r for r in result.item_results if r.item == item), None)
             if item_result:
-                tokens_str = f", {item_result.token_usage.total_tokens:,} tokens" if item_result.token_usage.total_tokens > 0 else ""
-                cost_str = f", ${item_result.estimated_cost_usd:.4f}" if item_result.estimated_cost_usd else ""
+                usage = item_result.token_usage
+                if usage.total_tokens > 0:
+                    cached_str = f" ({usage.cached_tokens:,} cached)" if usage.cached_tokens > 0 else ""
+                    tokens_str = f", {usage.total_tokens:,} tokens{cached_str}"
+                else:
+                    tokens_str = ""
+                cost = usage.total_cost if usage.total_cost > 0 else item_result.estimated_cost_usd
+                cost_str = f", ${cost:.4f}" if cost else ""
                 llm = result.config_summary.get("llm_model", "")[:15]
                 print(f"    [{llm}] {item_result.status} ({item_result.duration_seconds:.1f}s{tokens_str}{cost_str})")
             else:
@@ -231,17 +247,47 @@ def compare_results(result_files: list[str]) -> None:
         if not judge_enabled:
             print("    (judge disabled)")
 
+    # Detailed token breakdown
+    print("\n" + "-" * 110)
+    print("Token Breakdown:")
+    for path, result in results:
+        llm = result.config_summary.get("llm_model", "unknown")[:20]
+        usage = result.cost_metrics.token_usage
+        if usage.total_tokens > 0:
+            print(f"\n  [{llm}]")
+            print(f"    Input:  {usage.input_tokens:,}" + (f" ({usage.cached_tokens:,} cached, {usage.non_cached_input_tokens:,} new)" if usage.cached_tokens > 0 else ""))
+            print(f"    Output: {usage.output_tokens:,}")
+            print(f"    Total:  {usage.total_tokens:,}")
+            if usage.total_cost > 0:
+                print(f"    Cost:   ${usage.total_cost:.4f}" + (f" (in: ${usage.input_cost:.4f}, out: ${usage.output_cost:.4f}, cache: ${usage.cached_cost:.4f})" if usage.input_cost > 0 else ""))
+            if usage.entry_count > 0:
+                print(f"    Calls:  {usage.entry_count}")
+            # Show by-model if available
+            if usage.by_model:
+                for model, model_usage in usage.by_model.items():
+                    model_tokens = model_usage.get("input_tokens", 0) + model_usage.get("output_tokens", 0)
+                    model_cached = model_usage.get("cached_tokens", 0)
+                    model_cost = model_usage.get("total_cost", 0)
+                    cached_str = f" ({model_cached:,} cached)" if model_cached > 0 else ""
+                    cost_str = f", ${model_cost:.4f}" if model_cost > 0 else ""
+                    print(f"      {model}: {model_tokens:,} tokens{cached_str}{cost_str}")
+        else:
+            print(f"\n  [{llm}] (no token data)")
+
     # Cost efficiency summary
-    print("\n" + "-" * 90)
-    print("Cost Efficiency (tokens per successful item):")
+    print("\n" + "-" * 110)
+    print("Cost Efficiency (per successful item):")
     for path, result in results:
         llm = result.config_summary.get("llm_model", "unknown")[:20]
         successful_items = sum(1 for r in result.item_results if r.status == "success")
-        total_tokens = result.cost_metrics.token_usage.total_tokens
+        usage = result.cost_metrics.token_usage
+        total_tokens = usage.total_tokens
+        total_cost = usage.total_cost if usage.total_cost > 0 else (result.cost_metrics.estimated_cost_usd or 0)
         if successful_items > 0 and total_tokens > 0:
             tokens_per_success = total_tokens / successful_items
-            cost_per_success = (result.cost_metrics.estimated_cost_usd or 0) / successful_items
-            print(f"  [{llm}] {tokens_per_success:,.0f} tokens/success, ${cost_per_success:.4f}/success")
+            cost_per_success = total_cost / successful_items if total_cost > 0 else 0
+            cost_str = f", ${cost_per_success:.4f}/success" if cost_per_success > 0 else ""
+            print(f"  [{llm}] {tokens_per_success:,.0f} tokens/success{cost_str}")
         else:
             print(f"  [{llm}] N/A (no successful items or no token data)")
 
@@ -265,11 +311,11 @@ def list_runs(outputs_dir: str = "outputs", limit: int = 10) -> None:
     result_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     result_files = result_files[:limit]
 
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 115)
     print(f"RECENT EVALUATION RUNS (last {len(result_files)})")
-    print("=" * 100)
-    print(f"{'Path':<50} {'LLM':<18} {'Success':<10} {'Tokens':<12} {'Cost':<10}")
-    print("-" * 100)
+    print("=" * 115)
+    print(f"{'Path':<50} {'LLM':<18} {'Success':<8} {'In/Out/Cached':<18} {'Cost':<12}")
+    print("-" * 115)
 
     for result_path in result_files:
         try:
@@ -277,13 +323,20 @@ def list_runs(outputs_dir: str = "outputs", limit: int = 10) -> None:
             # Get relative path from outputs dir
             rel_path = str(result_path.relative_to(outputs_path.parent))[:48]
             llm = result.config_summary.get("llm_model", "unknown")[:16]
-            tokens = f"{result.cost_metrics.token_usage.total_tokens:,}" if result.cost_metrics.token_usage.total_tokens > 0 else "N/A"
-            cost = f"${result.cost_metrics.estimated_cost_usd:.4f}" if result.cost_metrics.estimated_cost_usd else "N/A"
-            print(f"{rel_path:<50} {llm:<18} {result.success_rate:.0%}       {tokens:<12} {cost}")
+            usage = result.cost_metrics.token_usage
+            if usage.total_tokens > 0:
+                cached_str = f"+{usage.cached_tokens//1000}k" if usage.cached_tokens > 0 else ""
+                tokens = f"{usage.input_tokens//1000}k/{usage.output_tokens//1000}k{cached_str}"
+            else:
+                tokens = "N/A"
+            # Prefer total_cost from token usage, fall back to estimated_cost_usd
+            cost = usage.total_cost if usage.total_cost > 0 else result.cost_metrics.estimated_cost_usd
+            cost_str = f"${cost:.4f}" if cost else "N/A"
+            print(f"{rel_path:<50} {llm:<18} {result.success_rate:.0%}     {tokens:<18} {cost_str}")
         except Exception as e:
             print(f"{result_path}: (error: {e})")
 
-    print("=" * 100)
+    print("=" * 115)
     print(f"\nTo compare runs, use:")
     print(f"  uv run -m src.eval.cli compare <path1> <path2> ...")
 
@@ -355,6 +408,7 @@ HYDRA OVERRIDES:
     max_steps=N         Override max steps
     dry_run=true        Print config without running
     cleanup_profile=true  Remove temp browser profile after run (default: keep it)
+    hydra/launcher=joblib  Run multirun jobs in parallel (use with --multirun)
 
 UTILITY COMMANDS:
     list-models         List available LLM configurations
@@ -376,8 +430,11 @@ EXAMPLES:
     # Override items
     uv run -m src.eval.cli 'items=[bread,eggs]'
 
-    # Multirun across LLMs
+    # Multirun across LLMs (sequential)
     uv run -m src.eval.cli --multirun llm=gpt4,llama_70b
+
+    # Multirun across LLMs (parallel)
+    uv run -m src.eval.cli --multirun hydra/launcher=joblib llm=gpt4,llama_70b
 
     # Use experiment preset
     uv run -m src.eval.cli +experiment=quick_test
