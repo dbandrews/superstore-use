@@ -1,10 +1,12 @@
-Navigate to {cart_url} and extract all items in the shopping cart.
+View the shopping cart contents at Real Canadian Superstore.
 
 Steps:
-1. Go to {cart_url}
-2. Wait for the cart page to load completely
-3. Look for all product items listed in the cart
-4. For each item, note:
+1. Go to {base_url}
+2. Wait for the main page to load completely
+3. Find and click on the cart icon or "View Cart" link (usually in the header/top-right area)
+4. Wait for the cart review page to load
+5. Look for all product items listed in the cart
+6. For each item, note:
    - Product name
    - Quantity
    - Price (if visible)

@@ -141,6 +141,9 @@ chat_image = (
         "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
         "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
         "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
+        # Navigation timeouts - default 15s/10s is too short for slow sites
+        "TIMEOUT_NavigateToUrlEvent": str(_config.browser.timeout_navigate_to_url),
+        "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
     cpu=2,
@@ -297,6 +300,9 @@ def login_remote_streaming():
         "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
         "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
         "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
+        # Navigation timeouts - default 15s/10s is too short for slow sites
+        "TIMEOUT_NavigateToUrlEvent": str(_config.browser.timeout_navigate_to_url),
+        "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
     cpu=2,
@@ -478,6 +484,9 @@ def add_item_remote_streaming(item: str, index: int):
         "TIMEOUT_BrowserStartEvent": str(_config.browser.timeout_browser_start),
         "TIMEOUT_BrowserLaunchEvent": str(_config.browser.timeout_browser_launch),
         "TIMEOUT_BrowserStateRequestEvent": str(_config.browser.timeout_browser_state_request),
+        # Navigation timeouts - default 15s/10s is too short for slow sites
+        "TIMEOUT_NavigateToUrlEvent": str(_config.browser.timeout_navigate_to_url),
+        "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
     cpu=2,
@@ -526,16 +535,15 @@ def view_cart_remote_streaming():
             )
 
         try:
-            cart_url = f"{config.app.base_url}/cartReview"
-
             try:
                 task = config.load_prompt(
                     "view_cart",
-                    cart_url=cart_url,
+                    base_url=config.app.base_url,
                 )
             except FileNotFoundError:
                 task = f"""
-                Navigate to {cart_url} and extract all items in the shopping cart.
+                Go to {config.app.base_url} and click on the cart icon to view the shopping cart.
+                Extract all items in the shopping cart.
                 Return a bullet point list of all items with quantities and prices.
                 If the cart is empty, return "Your cart is empty."
                 """
@@ -769,6 +777,7 @@ def flask_app():
             "updated_at": time.time(),
             "items_processed": [],
             "items_in_progress": {},
+            "login_progress": None,
             "final_message": None,
             "error": None,
         }
@@ -783,13 +792,25 @@ def flask_app():
             event_type = event.get("type", "")
             job["updated_at"] = time.time()
 
-            if event_type == "item_start":
+            if event_type == "login_start":
+                job["login_progress"] = {"step": 0, "thinking": None, "next_goal": None}
+            elif event_type == "login_step":
+                job["login_progress"] = {
+                    "step": event.get("step", 0),
+                    "thinking": event.get("thinking"),
+                    "next_goal": event.get("next_goal"),
+                }
+            elif event_type == "login_complete":
+                job["login_progress"] = None
+            elif event_type == "item_start":
                 job["items_in_progress"][event["item"]] = {"step": 0, "action": "Starting..."}
             elif event_type == "step":
                 if event.get("item") in job["items_in_progress"]:
                     job["items_in_progress"][event["item"]] = {
                         "step": event.get("step", 0),
                         "action": event.get("action", "..."),
+                        "thinking": event.get("thinking"),
+                        "next_goal": event.get("next_goal"),
                     }
             elif event_type == "item_complete":
                 item_name = event.get("item")

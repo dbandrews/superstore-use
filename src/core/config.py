@@ -98,6 +98,9 @@ class BrowserConfig(BaseModel):
     timeout_browser_start: int = 120
     timeout_browser_launch: int = 120
     timeout_browser_state_request: int = 120
+    # Navigation timeouts - default 15s/10s in browser-use is too short for slow sites
+    timeout_navigate_to_url: int = 60
+    timeout_switch_tab: int = 30
     local: BrowserLocalConfig = Field(default_factory=BrowserLocalConfig)
     modal: BrowserModalConfig = Field(default_factory=BrowserModalConfig)
 
