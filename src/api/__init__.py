@@ -21,6 +21,7 @@ from src.api.credentials import SuperstoreCredentials, extract_credentials_from_
 from src.api.client import SuperstoreAPIClient, ProductSearchResult, CartEntry
 from src.api.tools import API_TOOLS, set_credentials, get_client, initialize_anonymous_session
 from src.api.agent import create_api_agent
+from src.api.modal_agent import create_api_modal_agent
 
 __all__ = [
     # Credentials
@@ -37,4 +38,5 @@ __all__ = [
     "initialize_anonymous_session",
     # Agent
     "create_api_agent",
+    "create_api_modal_agent",
 ]

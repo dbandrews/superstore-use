@@ -33,6 +33,9 @@ session_volume = modal.Volume.from_name("superstore-session", create_if_missing=
 # Distributed Dict for storing job state (persists across function invocations)
 job_state_dict = modal.Dict.from_name("superstore-job-state", create_if_missing=True)
 
+# Distributed Dict for storing API credentials per session
+api_credentials_dict = modal.Dict.from_name("superstore-api-credentials", create_if_missing=True)
+
 
 # =============================================================================
 # Shared Configuration (imported from core module)
@@ -114,6 +117,7 @@ chat_image = (
         "pydantic",
         "python-dotenv",
         "modal",
+        "httpx",  # For API-based tools
     )
     .add_local_dir("src", remote_path="/root/src", copy=True)
     .add_local_file("config.toml", remote_path="/app/config.toml", copy=True)
@@ -231,6 +235,25 @@ def login_remote_streaming():
 
             session_volume.commit()
             print("[Login] Session committed to Modal volume.")
+
+            # Extract API credentials from browser session
+            try:
+                from src.api.credentials import extract_credentials_from_page
+
+                # Get the page from the browser session
+                pages = browser.context.pages if hasattr(browser, 'context') else []
+                if pages:
+                    page = pages[0]
+                    credentials = await extract_credentials_from_page(page)
+
+                    if credentials.cart_id:
+                        # Store credentials in Modal Dict for API-based tools
+                        api_credentials_dict["default"] = credentials.to_dict()
+                        print(f"[Login] API credentials extracted: cart_id={credentials.cart_id[:8]}...")
+                    else:
+                        print("[Login] Warning: Could not extract cart_id from session")
+            except Exception as e:
+                print(f"[Login] Warning: Failed to extract API credentials: {e}")
 
             return {"status": "success", "message": "Login successful", "steps": step_count}
 
@@ -636,6 +659,177 @@ def view_cart_remote_streaming():
 
 
 # =============================================================================
+# API-Based Functions (Fast, No Browser Needed)
+# =============================================================================
+
+
+@app.function(
+    image=chat_image,
+    secrets=[modal.Secret.from_name("groq-secret")],
+    timeout=60,
+    cpu=0.5,
+    memory=512,
+)
+async def api_search_products(query: str, max_results: int = 5, store_id: str = "1545") -> dict:
+    """Search for products using the Superstore API (no browser needed).
+
+    This is much faster than browser-based search (~200-500ms vs 30-60s).
+
+    Args:
+        query: Search term (e.g., "milk", "eggs")
+        max_results: Number of results to return
+        store_id: Store ID for pricing
+
+    Returns:
+        Dict with status and list of products
+    """
+    from src.api.client import SuperstoreAPIClient
+    from src.api.credentials import SuperstoreCredentials
+
+    try:
+        # Try to get credentials from Modal Dict, or create anonymous session
+        creds_dict = api_credentials_dict.get("default", None)
+        if creds_dict:
+            credentials = SuperstoreCredentials.from_dict(creds_dict)
+            print(f"[API] Using stored credentials: cart_id={credentials.cart_id[:8] if credentials.cart_id else 'None'}...")
+        else:
+            credentials = SuperstoreCredentials(store_id=store_id)
+            print("[API] No stored credentials, creating anonymous session...")
+
+        async with SuperstoreAPIClient(credentials) as client:
+            # Ensure cart exists
+            await client.ensure_cart()
+
+            # Update stored credentials with new cart if created
+            if not creds_dict or not creds_dict.get("cart_id"):
+                api_credentials_dict["default"] = client.credentials.to_dict()
+
+            results = await client.search(query, size=max_results)
+
+            return {
+                "status": "success",
+                "query": query,
+                "count": len(results),
+                "products": [
+                    {
+                        "code": p.code,
+                        "name": p.name,
+                        "brand": p.brand,
+                        "price": p.price,
+                        "unit": p.unit,
+                        "description": p.description[:100] if p.description else "",
+                    }
+                    for p in results
+                ],
+            }
+
+    except Exception as e:
+        return {"status": "failed", "message": str(e), "products": []}
+
+
+@app.function(
+    image=chat_image,
+    secrets=[modal.Secret.from_name("groq-secret")],
+    timeout=60,
+    cpu=0.5,
+    memory=512,
+)
+async def api_add_to_cart(product_code: str, quantity: int = 1) -> dict:
+    """Add a product to cart using the Superstore API (no browser needed).
+
+    Args:
+        product_code: Product code from search results (e.g., "20657896_EA")
+        quantity: Number of items to add
+
+    Returns:
+        Dict with status and message
+    """
+    from src.api.client import SuperstoreAPIClient
+    from src.api.credentials import SuperstoreCredentials
+
+    try:
+        # Get credentials from Modal Dict
+        creds_dict = api_credentials_dict.get("default", None)
+        if not creds_dict:
+            return {
+                "status": "failed",
+                "message": "No cart available. Please login first or search for products to create a cart.",
+            }
+
+        credentials = SuperstoreCredentials.from_dict(creds_dict)
+        print(f"[API] Adding {quantity}x {product_code} to cart {credentials.cart_id[:8]}...")
+
+        async with SuperstoreAPIClient(credentials) as client:
+            await client.add_to_cart({product_code: quantity})
+
+            return {
+                "status": "success",
+                "message": f"Added {quantity}x {product_code} to cart",
+                "product_code": product_code,
+                "quantity": quantity,
+            }
+
+    except Exception as e:
+        return {"status": "failed", "message": str(e)}
+
+
+@app.function(
+    image=chat_image,
+    secrets=[modal.Secret.from_name("groq-secret")],
+    timeout=60,
+    cpu=0.5,
+    memory=512,
+)
+async def api_view_cart() -> dict:
+    """View cart contents using the Superstore API (no browser needed).
+
+    Returns:
+        Dict with status and cart contents
+    """
+    from src.api.client import SuperstoreAPIClient
+    from src.api.credentials import SuperstoreCredentials
+
+    try:
+        # Get credentials from Modal Dict
+        creds_dict = api_credentials_dict.get("default", None)
+        if not creds_dict:
+            return {
+                "status": "success",
+                "message": "No cart exists yet. Search for products to create a cart.",
+                "items": [],
+                "total": 0.0,
+            }
+
+        credentials = SuperstoreCredentials.from_dict(creds_dict)
+        print(f"[API] Viewing cart {credentials.cart_id[:8]}...")
+
+        async with SuperstoreAPIClient(credentials) as client:
+            entries = await client.get_cart()
+
+            total = sum(e.total_price for e in entries)
+
+            return {
+                "status": "success",
+                "items": [
+                    {
+                        "code": e.product_code,
+                        "name": e.name,
+                        "brand": e.brand,
+                        "quantity": e.quantity,
+                        "unit_price": e.unit_price,
+                        "total_price": e.total_price,
+                    }
+                    for e in entries
+                ],
+                "total": total,
+                "item_count": len(entries),
+            }
+
+    except Exception as e:
+        return {"status": "failed", "message": str(e), "items": []}
+
+
+# =============================================================================
 # Profile Upload (Local -> Modal Volume)
 # =============================================================================
 @app.function(
@@ -753,17 +947,33 @@ def flask_app():
     from langchain_core.messages import AIMessage, HumanMessage
 
     from src.core.agent import create_chat_agent
+    from src.api.modal_agent import create_api_modal_agent
 
     # Explicitly set template and static folders to match Modal paths
     flask_app = Flask(__name__, template_folder="/app/templates", static_folder="/app/static")
 
-    # Store agent instances per session
+    # Store agent instances per session (keyed by thread_id + mode)
     agents = {}
 
-    def get_or_create_agent(thread_id: str):
-        if thread_id not in agents:
-            agents[thread_id] = create_chat_agent()
-        return agents[thread_id]
+    # Check if API mode is enabled via environment variable
+    USE_API_MODE = os.environ.get("USE_API_MODE", "false").lower() == "true"
+
+    def get_or_create_agent(thread_id: str, use_api: bool = False):
+        """Get or create an agent for the given thread.
+
+        Args:
+            thread_id: Unique thread identifier
+            use_api: If True, use API-based agent (faster). If False, use browser agent.
+        """
+        agent_key = f"{thread_id}:{'api' if use_api else 'browser'}"
+        if agent_key not in agents:
+            if use_api or USE_API_MODE:
+                print(f"[Flask] Creating API-based agent for {thread_id}")
+                agents[agent_key] = create_api_modal_agent()
+            else:
+                print(f"[Flask] Creating browser-based agent for {thread_id}")
+                agents[agent_key] = create_chat_agent()
+        return agents[agent_key]
 
     # Job state management helpers
     def create_job(thread_id: str, message: str) -> str:
@@ -870,6 +1080,7 @@ def flask_app():
         data = request.json
         thread_id = data.get("thread_id")
         message = data.get("message")
+        use_api = data.get("use_api", USE_API_MODE)  # Allow per-request override
 
         if not thread_id or not message:
             return jsonify({"error": "Missing thread_id or message"}), 400
@@ -879,7 +1090,7 @@ def flask_app():
 
         def run_agent_async():
             try:
-                agent = get_or_create_agent(thread_id)
+                agent = get_or_create_agent(thread_id, use_api=use_api)
                 config = {"configurable": {"thread_id": thread_id}}
 
                 async def stream_agent():
