@@ -9,28 +9,41 @@ but all subsequent operations use direct API calls.
 
 from __future__ import annotations
 
-import json
-from typing import Generator, Literal
+import os
+from typing import Literal
 
-import modal
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from src.core.config import load_config
+from src.api.client import SuperstoreAPIClient
+from src.api.credentials import SuperstoreCredentials
 
 # Load configuration
 _config = load_config()
 
-# Modal app name for looking up deployed functions
-MODAL_APP_NAME = _config.app.name
+# Shared API client instance to persist cart across tool calls
+_shared_client: SuperstoreAPIClient | None = None
+_shared_credentials: SuperstoreCredentials | None = None
 
-# Track login state
-_logged_in = False
+
+async def get_shared_client() -> SuperstoreAPIClient:
+    """Get or create a shared API client that persists the cart."""
+    global _shared_client, _shared_credentials
+
+    if _shared_client is None or _shared_credentials is None:
+        _shared_credentials = SuperstoreCredentials()
+        _shared_client = SuperstoreAPIClient(_shared_credentials)
+        # Create a cart immediately
+        await _shared_client.ensure_cart()
+        print(f"[API Agent] Created new cart: {_shared_credentials.cart_id}")
+
+    return _shared_client
 
 
 API_SYSTEM_PROMPT = """You are a helpful grocery shopping assistant for Real Canadian Superstore.
@@ -69,69 +82,8 @@ User: "Add milk to my cart"
 """
 
 
-def get_modal_function(function_name: str) -> modal.Function:
-    """Look up a deployed Modal function."""
-    return modal.Function.from_name(MODAL_APP_NAME, function_name)
-
-
-def _ensure_logged_in_streaming() -> Generator[dict, None, tuple[bool, str]]:
-    """Streaming login that yields progress events."""
-    global _logged_in
-
-    if _logged_in:
-        yield {"type": "login_complete", "status": "success", "message": "Already logged in", "steps": 0}
-        return True, "Already logged in."
-
-    print("\n[API Agent] Logging in to Superstore...")
-
-    try:
-        login_fn = get_modal_function("login_remote_streaming")
-
-        for event_json in login_fn.remote_gen():
-            event = json.loads(event_json)
-            event_type = event.get("type")
-
-            if event_type == "start":
-                yield {"type": "login_start"}
-            elif event_type == "step":
-                yield {
-                    "type": "login_step",
-                    "step": event.get("step", 0),
-                    "thinking": event.get("thinking"),
-                    "next_goal": event.get("next_goal"),
-                }
-            elif event_type == "complete":
-                status = event.get("status", "failed")
-                message = event.get("message", "Unknown")
-                steps = event.get("steps", 0)
-
-                yield {
-                    "type": "login_complete",
-                    "status": status,
-                    "message": message,
-                    "steps": steps,
-                }
-
-                if status == "success":
-                    _logged_in = True
-                    return True, "Login successful."
-                else:
-                    return False, f"Login failed: {message}"
-
-        return False, "Login stream ended unexpectedly"
-
-    except modal.exception.NotFoundError:
-        error_msg = f"Modal app '{MODAL_APP_NAME}' not found. Deploy with: modal deploy modal/app.py"
-        yield {"type": "login_complete", "status": "failed", "message": error_msg, "steps": 0}
-        return False, error_msg
-    except Exception as e:
-        error_msg = f"Login error: {str(e)}"
-        yield {"type": "login_complete", "status": "failed", "message": error_msg, "steps": 0}
-        return False, error_msg
-
-
 @tool
-def search_products(query: str, max_results: int = 5) -> str:
+async def search_products(query: str, max_results: int = 5) -> str:
     """Search for grocery products at Real Canadian Superstore.
 
     Returns a list of products with their codes, names, brands, and prices.
@@ -150,30 +102,28 @@ def search_products(query: str, max_results: int = 5) -> str:
         if writer:
             writer({"progress": {"type": "api_search_start", "query": query}})
 
-        search_fn = get_modal_function("api_search_products")
-        result = search_fn.remote(query, max_results)
+        # Use shared client to persist cart across calls
+        client = await get_shared_client()
+        results = await client.search(query, size=max_results)
 
         if writer:
-            writer({"progress": {"type": "api_search_complete", "count": result.get("count", 0)}})
+            writer({"progress": {"type": "api_search_complete", "count": len(results)}})
 
-        if result.get("status") != "success":
-            return f"Error searching: {result.get('message', 'Unknown error')}"
-
-        products = result.get("products", [])
-        if not products:
+        if not results:
             return f"No products found for '{query}'. Try a different search term."
 
-        output = f"Found {len(products)} products for '{query}':\n\n"
+        output = f"Found {len(results)} products for '{query}':\n\n"
 
-        for i, p in enumerate(products, 1):
-            output += f"**{i}. {p['name']}**"
-            if p.get("brand"):
-                output += f" ({p['brand']})"
+        for i, p in enumerate(results, 1):
+            output += f"**{i}. {p.name}**"
+            if p.brand:
+                output += f" ({p.brand})"
             output += "\n"
-            output += f"   Code: `{p['code']}`\n"
-            output += f"   Price: ${p['price']:.2f}/{p.get('unit', 'ea')}\n"
-            if p.get("description"):
-                output += f"   {p['description']}\n"
+            output += f"   Code: `{p.code}`\n"
+            output += f"   Price: ${p.price:.2f}/{p.unit}\n"
+            if p.description:
+                desc = p.description[:80] + "..." if len(p.description) > 80 else p.description
+                output += f"   {desc}\n"
             output += "\n"
 
         output += "---\n"
@@ -182,14 +132,12 @@ def search_products(query: str, max_results: int = 5) -> str:
 
         return output
 
-    except modal.exception.NotFoundError:
-        return f"Error: Modal app '{MODAL_APP_NAME}' not found. Deploy with: modal deploy modal/app.py"
     except Exception as e:
         return f"Error searching: {str(e)}"
 
 
 @tool
-def add_to_cart(product_code: str, quantity: int = 1) -> str:
+async def add_to_cart(product_code: str, quantity: int = 1) -> str:
     """Add a product to the shopping cart using its product code.
 
     IMPORTANT: Search for products first to get the product code!
@@ -216,25 +164,21 @@ def add_to_cart(product_code: str, quantity: int = 1) -> str:
         if writer:
             writer({"progress": {"type": "api_add_start", "code": product_code, "quantity": quantity}})
 
-        add_fn = get_modal_function("api_add_to_cart")
-        result = add_fn.remote(product_code, quantity)
+        # Use shared client to persist cart across calls
+        client = await get_shared_client()
+        await client.add_to_cart({product_code: quantity})
 
         if writer:
-            writer({"progress": {"type": "api_add_complete", "status": result.get("status")}})
+            writer({"progress": {"type": "api_add_complete", "status": "success"}})
 
-        if result.get("status") == "success":
-            return f"Successfully added {quantity}x {product_code} to cart!"
-        else:
-            return f"Failed to add to cart: {result.get('message', 'Unknown error')}"
+        return f"Successfully added {quantity}x {product_code} to cart!"
 
-    except modal.exception.NotFoundError:
-        return f"Error: Modal app '{MODAL_APP_NAME}' not found. Deploy with: modal deploy modal/app.py"
     except Exception as e:
         return f"Error adding to cart: {str(e)}"
 
 
 @tool
-def view_cart() -> str:
+async def view_cart() -> str:
     """View the current shopping cart contents.
 
     Returns:
@@ -246,40 +190,33 @@ def view_cart() -> str:
         if writer:
             writer({"progress": {"type": "api_view_cart_start"}})
 
-        view_fn = get_modal_function("api_view_cart")
-        result = view_fn.remote()
+        # Use shared client to persist cart across calls
+        client = await get_shared_client()
+        entries = await client.get_cart()
 
         if writer:
-            writer({"progress": {"type": "api_view_cart_complete", "count": result.get("item_count", 0)}})
+            writer({"progress": {"type": "api_view_cart_complete", "count": len(entries)}})
 
-        if result.get("status") != "success":
-            return f"Error viewing cart: {result.get('message', 'Unknown error')}"
-
-        items = result.get("items", [])
-        if not items:
+        if not entries:
             return "Your cart is empty."
 
         output = "**Current Cart Contents:**\n\n"
+        total = 0.0
 
-        for item in items:
-            name = item.get("name", "Unknown")
-            if item.get("brand"):
-                name = f"{item['brand']} - {name}"
+        for entry in entries:
+            name = entry.name
+            if entry.brand:
+                name = f"{entry.brand} - {name}"
 
-            qty = item.get("quantity", 1)
-            unit_price = item.get("unit_price", 0)
-            total = item.get("total_price", 0)
-
-            output += f"- **{qty}x** {name}\n"
-            output += f"  ${unit_price:.2f} each = **${total:.2f}**\n\n"
+            output += f"- **{entry.quantity}x** {name}\n"
+            output += f"  ${entry.unit_price:.2f} each = **${entry.total_price:.2f}**\n\n"
+            total += entry.total_price
 
         output += "---\n"
-        output += f"**Estimated Total: ${result.get('total', 0):.2f}**"
+        output += f"**Estimated Total: ${total:.2f}**"
 
         return output
 
-    except modal.exception.NotFoundError:
-        return f"Error: Modal app '{MODAL_APP_NAME}' not found. Deploy with: modal deploy modal/app.py"
     except Exception as e:
         return f"Error viewing cart: {str(e)}"
 
@@ -298,11 +235,14 @@ def create_api_modal_agent():
 
     This agent uses fast API calls for search and cart operations,
     falling back to browser automation only for login.
+
+    Uses OpenAI GPT-4o-mini for reliable tool calling support.
     """
     config = load_config()
 
-    llm = ChatGroq(
-        model=config.llm.chat_model,
+    # Use OpenAI for reliable tool calling (Groq models have issues with tool format)
+    llm = ChatOpenAI(
+        model=os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
         temperature=config.llm.chat_temperature,
     )
     llm_with_tools = llm.bind_tools(API_MODAL_TOOLS)

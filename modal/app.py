@@ -113,6 +113,7 @@ chat_image = (
         "flask",
         "langchain-core",
         "langchain-groq",
+        "langchain-openai",  # For reliable tool calling
         "langgraph",
         "pydantic",
         "python-dotenv",
@@ -932,6 +933,7 @@ def upload_profile():
     image=chat_image,
     secrets=[
         modal.Secret.from_name("groq-secret"),
+        modal.Secret.from_name("openai-secret"),  # For reliable tool calling in API mode
         modal.Secret.from_name("web-auth", required_keys=["WEB_AUTH_TOKEN"]),
     ],
     timeout=600,
