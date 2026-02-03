@@ -752,7 +752,7 @@ def flask_app():
     from flask import Flask, Response, jsonify, render_template, request
     from langchain_core.messages import AIMessage, HumanMessage
 
-    from src.core.agent import create_chat_agent
+    from src.core.agent import clear_session_login_state, create_chat_agent, set_session_context
 
     # Explicitly set template and static folders to match Modal paths
     flask_app = Flask(__name__, template_folder="/app/templates", static_folder="/app/static")
@@ -879,6 +879,10 @@ def flask_app():
 
         def run_agent_async():
             try:
+                # Set session context for login state tracking
+                # This ensures login state persists across tool calls within this session
+                set_session_context(thread_id)
+
                 agent = get_or_create_agent(thread_id)
                 config = {"configurable": {"thread_id": thread_id}}
 
@@ -957,6 +961,9 @@ def flask_app():
         thread_id = data.get("thread_id")
         if thread_id in agents:
             del agents[thread_id]
+        # Also clear login state for this session so next interaction requires fresh login
+        if thread_id:
+            clear_session_login_state(thread_id)
         return jsonify({"status": "reset"})
 
     @flask_app.route("/health")

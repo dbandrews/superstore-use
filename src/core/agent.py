@@ -8,6 +8,7 @@ items to cart.
 Supports streaming progress events when used with stream_mode=["custom", ...].
 """
 
+import contextvars
 from typing import Generator, Literal
 
 import modal
@@ -26,6 +27,74 @@ _config = load_config()
 
 # Modal app name for looking up deployed functions
 MODAL_APP_NAME = _config.app.name
+
+# =============================================================================
+# Session-scoped Login State Management
+# =============================================================================
+# Use contextvars to track login state per session. This allows multiple
+# chat sessions to maintain independent login state within the same process.
+
+# Context variable to track current session ID
+_current_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_session_id", default=None
+)
+
+# Dict to track login state per session (session_id -> logged_in)
+_session_login_states: dict[str, bool] = {}
+
+
+def set_session_context(session_id: str) -> None:
+    """Set the current session context for login state tracking.
+
+    Call this before invoking the agent to ensure login state is tracked
+    per session rather than globally.
+
+    Args:
+        session_id: The unique identifier for the chat session (e.g., thread_id)
+    """
+    _current_session_id.set(session_id)
+
+
+def get_session_context() -> str | None:
+    """Get the current session ID from context."""
+    return _current_session_id.get()
+
+
+def is_session_logged_in() -> bool:
+    """Check if the current session is logged in.
+
+    Returns:
+        True if the current session has successfully logged in, False otherwise.
+    """
+    session_id = _current_session_id.get()
+    if session_id is None:
+        # No session context set, fall back to global state
+        return _logged_in
+    return _session_login_states.get(session_id, False)
+
+
+def set_session_logged_in(logged_in: bool) -> None:
+    """Set the login state for the current session.
+
+    Args:
+        logged_in: Whether the session is now logged in.
+    """
+    global _logged_in
+    session_id = _current_session_id.get()
+    if session_id:
+        _session_login_states[session_id] = logged_in
+    # Also update global state as fallback
+    _logged_in = logged_in
+
+
+def clear_session_login_state(session_id: str) -> None:
+    """Clear login state for a specific session (e.g., on reset).
+
+    Args:
+        session_id: The session to clear login state for.
+    """
+    if session_id in _session_login_states:
+        del _session_login_states[session_id]
 
 
 def _get_system_prompt() -> str:
@@ -75,9 +144,7 @@ def get_modal_function(function_name: str) -> modal.Function:
 
 def _ensure_logged_in() -> tuple[bool, str]:
     """Ensure user is logged in. Returns (success, message)."""
-    global _logged_in
-
-    if _logged_in:
+    if is_session_logged_in():
         return True, "Already logged in."
 
     print("\n[Agent] Logging in to Superstore...")
@@ -87,7 +154,7 @@ def _ensure_logged_in() -> tuple[bool, str]:
         result = login_fn.remote()
 
         if result.get("status") == "success":
-            _logged_in = True
+            set_session_logged_in(True)
             print("[Agent] Login successful!")
             return True, "Login successful."
         else:
@@ -107,6 +174,9 @@ def _ensure_logged_in_streaming() -> Generator[dict, None, tuple[bool, str]]:
     """
     Streaming version of login that yields progress events.
 
+    Uses session-scoped login state to avoid re-logging in for each tool call
+    within the same chat session.
+
     Yields:
         dict: Progress events with types:
             - {"type": "login_step", "step": int, "thinking": str, "next_goal": str}
@@ -117,9 +187,7 @@ def _ensure_logged_in_streaming() -> Generator[dict, None, tuple[bool, str]]:
     """
     import json
 
-    global _logged_in
-
-    if _logged_in:
+    if is_session_logged_in():
         yield {"type": "login_complete", "status": "success", "message": "Already logged in", "steps": 0}
         return True, "Already logged in."
 
@@ -154,7 +222,7 @@ def _ensure_logged_in_streaming() -> Generator[dict, None, tuple[bool, str]]:
                 }
 
                 if status == "success":
-                    _logged_in = True
+                    set_session_logged_in(True)
                     print(f"[Agent] Login successful! ({steps} steps)")
                     return True, "Login successful."
                 else:
@@ -205,8 +273,8 @@ def add_items_to_cart_streaming(items: list[str]) -> Generator[dict, None, str]:
         return "No items provided to add to cart."
 
     # Ensure logged in before adding items - use streaming for progress updates
-    global _logged_in
-    if _logged_in:
+    # Uses session-scoped login state to skip login if already done in this session
+    if is_session_logged_in():
         yield {"type": "status", "message": "Already logged in"}
     else:
         yield {"type": "status", "message": "Logging in to Superstore..."}
@@ -393,8 +461,8 @@ def view_cart_streaming() -> Generator[dict, None, str]:
     import json
 
     # Ensure logged in first - forward login events
-    global _logged_in
-    if _logged_in:
+    # Uses session-scoped login state to skip login if already done in this session
+    if is_session_logged_in():
         yield {"type": "status", "message": "Already logged in"}
     else:
         yield {"type": "status", "message": "Logging in to Superstore..."}
