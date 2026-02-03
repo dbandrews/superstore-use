@@ -956,7 +956,7 @@ def flask_app():
     agents = {}
 
     # Check if API mode is enabled via environment variable
-    USE_API_MODE = os.environ.get("USE_API_MODE", "false").lower() == "true"
+    USE_API_MODE = os.environ.get("USE_API_MODE", "true").lower() == "true"
 
     def get_or_create_agent(thread_id: str, use_api: bool = False):
         """Get or create an agent for the given thread.
