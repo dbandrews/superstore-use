@@ -295,12 +295,24 @@ def load_api_credentials(input_path: str = "/session/api_credentials.json") -> d
     """
     from pathlib import Path
 
+    print(f"[load_api_credentials] Loading from: {input_path}")
     input_file = Path(input_path)
+
     if not input_file.exists():
+        print(f"[load_api_credentials] File does not exist: {input_path}")
+        # List contents of /session to debug
+        session_dir = Path("/session")
+        if session_dir.exists():
+            print(f"[load_api_credentials] /session contents: {list(session_dir.iterdir())}")
+        else:
+            print("[load_api_credentials] /session directory does not exist!")
         return None
 
+    print(f"[load_api_credentials] File exists, reading...")
     with open(input_file) as f:
-        return json.load(f)
+        data = json.load(f)
+        print(f"[load_api_credentials] Loaded {len(data)} keys: {list(data.keys())}")
+        return data
 
 
 # =============================================================================
@@ -396,16 +408,18 @@ def login_remote_streaming():
             if interceptor_setup_done["value"]:
                 return
             try:
-                pw_browser = await browser.get_playwright_browser()
-                if pw_browser:
-                    for context in pw_browser.contexts:
-                        # Listen for new pages
-                        context.on("page", lambda page: page.on("request", on_request))
-                        # Set up on existing pages
-                        for page in context.pages:
-                            page.on("request", on_request)
+                # Use get_current_page() to access Playwright page
+                page = await browser.get_current_page()
+                if page:
+                    # Set up interception on current page
+                    page.on("request", on_request)
+                    # Also set up on context for new pages
+                    context = page.context
+                    context.on("page", lambda new_page: new_page.on("request", on_request))
                     interceptor_setup_done["value"] = True
                     print("[Login] Request interception set up for credential capture")
+                else:
+                    print("[Login] No current page available for interception")
             except Exception as e:
                 print(f"[Login] Could not set up interception: {e}")
 
@@ -471,24 +485,40 @@ def login_remote_streaming():
             if not captured_creds["bearer_token"]:
                 print("[Login] No token captured yet, navigating to trigger API calls...")
                 try:
-                    pw_browser = await browser.get_playwright_browser()
-                    if pw_browser and pw_browser.contexts:
-                        context = pw_browser.contexts[0]
-                        page = context.pages[0] if context.pages else await context.new_page()
+                    page = await browser.get_current_page()
+                    if page:
                         page.on("request", on_request)
                         await page.goto(
                             "https://www.realcanadiansuperstore.ca/",
                             wait_until="domcontentloaded",
                             timeout=30000,
                         )
-                        await asyncio.sleep(3)  # Wait for API calls
+                        await asyncio.sleep(5)  # Wait for API calls
+                        print(f"[Login] Navigated, checking captured creds: bearer={bool(captured_creds['bearer_token'])}")
+                    else:
+                        print("[Login] No page available to trigger API calls")
                 except Exception as e:
                     print(f"[Login] Could not trigger API calls: {e}")
 
             session_volume.commit()
             print("[Login] Session committed to Modal volume.")
 
-            # Use credentials captured during login (no new browser needed!)
+            # If no bearer token captured during agent run, try extracting from saved profile
+            if not captured_creds["bearer_token"]:
+                print("[Login] No token captured during agent run, extracting from profile...")
+                try:
+                    extracted = await extract_api_credentials_from_profile("/session/profile")
+                    if extracted.get("bearer_token"):
+                        captured_creds["bearer_token"] = extracted["bearer_token"]
+                        captured_creds["user_id"] = extracted.get("user_id")
+                        captured_creds["cart_id"] = extracted.get("cart_id")
+                        captured_creds["store_id"] = extracted.get("store_id")
+                        captured_creds["order_id"] = extracted.get("order_id")
+                        print(f"[Login] Extracted credentials from profile: user_id={captured_creds['user_id']}")
+                except Exception as e:
+                    print(f"[Login] Could not extract credentials from profile: {e}")
+
+            # Use credentials captured during login or extracted from profile
             if captured_creds["bearer_token"]:
                 credentials = {
                     "api_key": API_KEY,
@@ -505,7 +535,7 @@ def login_remote_streaming():
 
                 # Also store in Modal Dict for fast access by API functions
                 api_credentials_dict["default"] = credentials
-                print(f"[Login] API credentials captured: user_id={captured_creds['user_id']}, cart_id={captured_creds['cart_id'][:8] if captured_creds['cart_id'] else 'None'}...")
+                print(f"[Login] API credentials saved: user_id={captured_creds['user_id']}, cart_id={captured_creds['cart_id'][:8] if captured_creds['cart_id'] else 'None'}...")
 
                 return {
                     "status": "success",
@@ -518,7 +548,7 @@ def login_remote_streaming():
                     },
                 }
             else:
-                print("[Login] Warning: No bearer token captured during login")
+                print("[Login] Warning: No bearer token captured during login or extraction")
                 return {"status": "success", "message": "Login successful (no token captured)", "steps": step_count}
 
         except Exception as e:
@@ -586,8 +616,13 @@ def get_api_credentials() -> dict:
         dict with api_key, bearer_token, cart_id, store_id, user_id, etc.
         Returns default credentials (api_key only) if no saved credentials found.
     """
+    print("[get_api_credentials] Called - loading credentials...")
     creds = load_api_credentials("/session/api_credentials.json")
     if creds:
+        print(f"[get_api_credentials] Found credentials with keys: {list(creds.keys())}")
+        print(f"[get_api_credentials] user_id: {creds.get('user_id')}")
+        print(f"[get_api_credentials] cart_id: {creds.get('cart_id', 'None')[:8] if creds.get('cart_id') else 'None'}...")
+        print(f"[get_api_credentials] has_bearer_token: {bool(creds.get('bearer_token'))}")
         # Don't expose full bearer token in return value for security
         # Just indicate whether it's present
         return {
@@ -602,6 +637,7 @@ def get_api_credentials() -> dict:
             "bearer_token": creds.get("bearer_token"),  # Include for API use
         }
     else:
+        print("[get_api_credentials] No credentials found!")
         return {
             "status": "not_found",
             "api_key": API_KEY,
@@ -963,26 +999,57 @@ def view_cart_remote_streaming():
 # =============================================================================
 
 
-def _get_api_credentials() -> dict | None:
+def _get_api_credentials(require_auth: bool = False) -> dict | None:
     """Get API credentials from Modal Dict or Volume.
 
     Checks Modal Dict first (fast), then falls back to Volume (persistent).
 
+    Args:
+        require_auth: If True, only return credentials with bearer_token.
+                     If False, return any stored credentials (for anonymous carts).
+
     Returns:
         Credentials dict or None if not found
     """
+    print(f"[_get_api_credentials] Starting credential lookup (require_auth={require_auth})...")
+
     # Try Modal Dict first (in-memory, fast)
-    creds = api_credentials_dict.get("default", None)
-    if creds and creds.get("bearer_token"):
-        return creds
+    try:
+        creds = api_credentials_dict.get("default", None)
+        print(f"[_get_api_credentials] Modal Dict lookup result: {creds is not None}")
+        if creds:
+            print(f"[_get_api_credentials] Modal Dict creds keys: {list(creds.keys())}")
+            has_bearer = bool(creds.get("bearer_token"))
+            print(f"[_get_api_credentials] Modal Dict has bearer_token: {has_bearer}")
+            print(f"[_get_api_credentials] Modal Dict cart_id: {creds.get('cart_id', 'None')[:8] if creds.get('cart_id') else 'None'}...")
+
+            if has_bearer or not require_auth:
+                print(f"[_get_api_credentials] Returning credentials from Modal Dict (authenticated={has_bearer})")
+                return creds
+    except Exception as e:
+        print(f"[_get_api_credentials] Error reading Modal Dict: {e}")
 
     # Fall back to Volume (persistent)
-    creds = load_api_credentials("/session/api_credentials.json")
-    if creds and creds.get("bearer_token"):
-        # Cache in Dict for faster access next time
-        api_credentials_dict["default"] = creds
-        return creds
+    print("[_get_api_credentials] Falling back to Volume...")
+    try:
+        creds = load_api_credentials("/session/api_credentials.json")
+        print(f"[_get_api_credentials] Volume lookup result: {creds is not None}")
+        if creds:
+            print(f"[_get_api_credentials] Volume creds keys: {list(creds.keys())}")
+            has_bearer = bool(creds.get("bearer_token"))
+            print(f"[_get_api_credentials] Volume has bearer_token: {has_bearer}")
+            print(f"[_get_api_credentials] Volume cart_id: {creds.get('cart_id', 'None')[:8] if creds.get('cart_id') else 'None'}...")
 
+            if has_bearer or not require_auth:
+                # Cache in Dict for faster access next time
+                print("[_get_api_credentials] Caching credentials in Modal Dict")
+                api_credentials_dict["default"] = creds
+                print(f"[_get_api_credentials] Returning credentials from Volume (authenticated={has_bearer})")
+                return creds
+    except Exception as e:
+        print(f"[_get_api_credentials] Error reading Volume: {e}")
+
+    print("[_get_api_credentials] No valid credentials found!")
     return None
 
 
@@ -1011,11 +1078,13 @@ async def api_search_products(query: str, max_results: int = 5, store_id: str = 
     from src.api.credentials import SuperstoreCredentials
 
     try:
-        # Try to get credentials from Modal Dict or Volume
-        creds_dict = _get_api_credentials()
+        # Try to get credentials from Modal Dict or Volume (include anonymous carts)
+        creds_dict = _get_api_credentials(require_auth=False)
+        is_authenticated = creds_dict and creds_dict.get("bearer_token")
+
         if creds_dict:
             credentials = SuperstoreCredentials.from_dict(creds_dict)
-            print(f"[API] Using stored credentials: cart_id={credentials.cart_id[:8] if credentials.cart_id else 'None'}...")
+            print(f"[API] Using stored credentials: cart_id={credentials.cart_id[:8] if credentials.cart_id else 'None'}..., authenticated={is_authenticated}")
         else:
             credentials = SuperstoreCredentials(store_id=store_id)
             print("[API] No stored credentials, creating anonymous session...")
@@ -1025,8 +1094,15 @@ async def api_search_products(query: str, max_results: int = 5, store_id: str = 
             await client.ensure_cart()
 
             # Update stored credentials with new cart if created
-            if not creds_dict or not creds_dict.get("cart_id"):
+            # BUT: Never overwrite authenticated credentials with anonymous ones!
+            if not creds_dict or (not creds_dict.get("cart_id") and not is_authenticated):
+                print(f"[API] Saving new cart credentials (anonymous)")
                 api_credentials_dict["default"] = client.credentials.to_dict()
+            elif not creds_dict.get("cart_id") and is_authenticated:
+                # Authenticated user without cart - merge cart_id into existing credentials
+                print(f"[API] Merging cart_id into authenticated credentials")
+                updated_creds = {**creds_dict, "cart_id": client.credentials.cart_id}
+                api_credentials_dict["default"] = updated_creds
 
             results = await client.search(query, size=max_results)
 
@@ -1073,16 +1149,17 @@ async def api_add_to_cart(product_code: str, quantity: int = 1) -> dict:
     from src.api.credentials import SuperstoreCredentials
 
     try:
-        # Get credentials from Modal Dict or Volume
-        creds_dict = _get_api_credentials()
-        if not creds_dict:
+        # Get credentials from Modal Dict or Volume (include anonymous carts)
+        creds_dict = _get_api_credentials(require_auth=False)
+        if not creds_dict or not creds_dict.get("cart_id"):
             return {
                 "status": "failed",
-                "message": "No cart available. Please login first or search for products to create a cart.",
+                "message": "No cart available. Please search for products first to create a cart.",
             }
 
         credentials = SuperstoreCredentials.from_dict(creds_dict)
-        print(f"[API] Adding {quantity}x {product_code} to cart {credentials.cart_id[:8] if credentials.cart_id else 'None'}...")
+        is_authenticated = bool(creds_dict.get("bearer_token"))
+        print(f"[API] Adding {quantity}x {product_code} to cart {credentials.cart_id[:8] if credentials.cart_id else 'None'}... (authenticated={is_authenticated})")
 
         async with SuperstoreAPIClient(credentials) as client:
             await client.add_to_cart({product_code: quantity})
@@ -1116,18 +1193,19 @@ async def api_view_cart() -> dict:
     from src.api.credentials import SuperstoreCredentials
 
     try:
-        # Get credentials from Modal Dict or Volume
-        creds_dict = _get_api_credentials()
-        if not creds_dict:
+        # Get credentials from Modal Dict or Volume (include anonymous carts)
+        creds_dict = _get_api_credentials(require_auth=False)
+        if not creds_dict or not creds_dict.get("cart_id"):
             return {
                 "status": "success",
-                "message": "No cart exists yet. Login or search for products to create a cart.",
+                "message": "No cart exists yet. Search for products to create a cart.",
                 "items": [],
                 "total": 0.0,
             }
 
         credentials = SuperstoreCredentials.from_dict(creds_dict)
-        print(f"[API] Viewing cart {credentials.cart_id[:8] if credentials.cart_id else 'None'}...")
+        is_authenticated = bool(creds_dict.get("bearer_token"))
+        print(f"[API] Viewing cart {credentials.cart_id[:8] if credentials.cart_id else 'None'}... (authenticated={is_authenticated})")
 
         async with SuperstoreAPIClient(credentials) as client:
             entries = await client.get_cart()

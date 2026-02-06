@@ -30,20 +30,78 @@ _config = load_config()
 # Shared API client instance to persist cart across tool calls
 _shared_client: SuperstoreAPIClient | None = None
 _shared_credentials: SuperstoreCredentials | None = None
+_is_authenticated: bool = False
+
+
+def _load_stored_credentials() -> tuple[SuperstoreCredentials | None, bool]:
+    """Load credentials from Modal Dict or Volume.
+
+    Returns:
+        Tuple of (credentials, is_authenticated)
+    """
+    import json
+    from pathlib import Path
+
+    # Try Modal Dict first (fast, in-memory)
+    try:
+        import modal
+        api_dict = modal.Dict.from_name("superstore-api-credentials")
+        creds_dict = api_dict.get("default", None)
+        if creds_dict:
+            print(f"[API Agent] Found credentials in Modal Dict: keys={list(creds_dict.keys())}")
+            is_auth = bool(creds_dict.get("bearer_token"))
+            print(f"[API Agent] Authenticated: {is_auth}, cart_id: {creds_dict.get('cart_id', 'None')[:8] if creds_dict.get('cart_id') else 'None'}...")
+            return SuperstoreCredentials.from_dict(creds_dict), is_auth
+    except Exception as e:
+        print(f"[API Agent] Could not read Modal Dict: {e}")
+
+    # Fall back to Volume (persistent storage)
+    try:
+        creds_file = Path("/session/api_credentials.json")
+        if creds_file.exists():
+            creds_dict = json.loads(creds_file.read_text())
+            print(f"[API Agent] Found credentials in Volume: keys={list(creds_dict.keys())}")
+            is_auth = bool(creds_dict.get("bearer_token"))
+            print(f"[API Agent] Authenticated: {is_auth}, cart_id: {creds_dict.get('cart_id', 'None')[:8] if creds_dict.get('cart_id') else 'None'}...")
+            return SuperstoreCredentials.from_dict(creds_dict), is_auth
+        else:
+            print("[API Agent] No credentials file in Volume")
+    except Exception as e:
+        print(f"[API Agent] Could not read Volume: {e}")
+
+    return None, False
 
 
 async def get_shared_client() -> SuperstoreAPIClient:
     """Get or create a shared API client that persists the cart."""
-    global _shared_client, _shared_credentials
+    global _shared_client, _shared_credentials, _is_authenticated
 
     if _shared_client is None or _shared_credentials is None:
-        _shared_credentials = SuperstoreCredentials()
+        # Try to load stored credentials first
+        stored_creds, is_auth = _load_stored_credentials()
+
+        if stored_creds and stored_creds.cart_id:
+            _shared_credentials = stored_creds
+            _is_authenticated = is_auth
+            print(f"[API Agent] Using stored credentials (authenticated={is_auth})")
+        else:
+            # Fall back to anonymous credentials
+            _shared_credentials = SuperstoreCredentials()
+            _is_authenticated = False
+            print("[API Agent] No stored credentials, using anonymous session")
+
         _shared_client = SuperstoreAPIClient(_shared_credentials)
-        # Create a cart immediately
+
+        # Ensure cart exists (will create if needed)
         await _shared_client.ensure_cart()
-        print(f"[API Agent] Created new cart: {_shared_credentials.cart_id}")
+        print(f"[API Agent] Cart ready: {_shared_credentials.cart_id}")
 
     return _shared_client
+
+
+def is_authenticated() -> bool:
+    """Check if the current session is authenticated."""
+    return _is_authenticated
 
 
 API_SYSTEM_PROMPT = """You are a helpful grocery shopping assistant for Real Canadian Superstore.
@@ -54,6 +112,7 @@ You have access to fast API-based tools that don't require browser automation:
 1. **search_products**: Search for grocery items by name
 2. **add_to_cart**: Add a specific product to cart using its product code
 3. **view_cart**: View current cart contents
+4. **check_login_status**: Check if the user is logged in
 
 ## CRITICAL WORKFLOW:
 1. When user wants to add items, ALWAYS search first to get the product CODE
@@ -75,10 +134,11 @@ User: "Add milk to my cart"
 - Be concise but helpful
 - If a product isn't found, suggest alternative search terms
 
-## Important Notes:
-- Product codes have suffixes: _EA (each), _KG (by weight)
-- Prices are current for the selected store
-- Login is automatic when needed
+## Login Status:
+- If user asks about login status, use check_login_status tool
+- Anonymous users can still search and add to cart (cart is session-based)
+- Authenticated users have their cart linked to their account for checkout
+- If user says "login", tell them to use the browser-based login flow
 """
 
 
@@ -221,8 +281,31 @@ async def view_cart() -> str:
         return f"Error viewing cart: {str(e)}"
 
 
+@tool
+async def check_login_status() -> str:
+    """Check if the current session is authenticated with a logged-in account.
+
+    Returns:
+        Status message indicating if the user is logged in or using anonymous session
+    """
+    # Ensure client is initialized to check credentials
+    await get_shared_client()
+
+    if is_authenticated():
+        return (
+            "You are logged in with an authenticated account. "
+            "Your cart is linked to your Real Canadian Superstore account and will be saved."
+        )
+    else:
+        return (
+            "You are using an anonymous session (not logged in). "
+            "You can still search and add items to cart, but the cart is session-based only. "
+            "To link your cart to your account for checkout, you would need to log in through the browser-based login flow."
+        )
+
+
 # API-based tools for the agent
-API_MODAL_TOOLS = [search_products, add_to_cart, view_cart]
+API_MODAL_TOOLS = [search_products, add_to_cart, view_cart, check_login_status]
 
 
 class GroceryState(MessagesState):
