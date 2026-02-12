@@ -1,8 +1,0 @@
-# Qwen: Qwen3 VL 235B A22B Instruct
-# $0.2000/M input, $1.2000/M output, 262,144 context
-model: qwen/qwen3-vl-235b-a22b-instruct
-provider: openrouter
-temperature: 0.0
-use_vision: true
-base_url: https://openrouter.ai/api/v1
-api_key_env: OPENROUTER_API_KEY

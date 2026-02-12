@@ -1,8 +1,0 @@
-# Qwen: Qwen3 VL 8B Thinking
-# $0.1800/M input, $2.1000/M output, 256,000 context
-model: qwen/qwen3-vl-8b-thinking
-provider: openrouter
-temperature: 0.0
-use_vision: true
-base_url: https://openrouter.ai/api/v1
-api_key_env: OPENROUTER_API_KEY

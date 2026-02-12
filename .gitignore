@@ -1,3 +1,6 @@
+outputs/
+multirun/
+
 # Ignore all contents of superstore-profile except .gitkeep placeholder
 superstore-profile/*
 !superstore-profile/.gitkeep

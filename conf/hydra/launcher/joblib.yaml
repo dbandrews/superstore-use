@@ -1,0 +1,22 @@
+# Joblib launcher for parallel multirun execution
+# Usage: uv run -m src.eval.cli --multirun hydra/launcher=joblib llm=gpt4o,llama_70b
+
+_target_: hydra_plugins.hydra_joblib_launcher.joblib_launcher.JoblibLauncher
+
+# Number of parallel jobs (-1 = use all available cores, 1 = sequential)
+n_jobs: -1
+
+# Backend for joblib (loky is recommended for process-based parallelism)
+backend: loky
+
+# Verbosity level for joblib (0 = silent, 10 = verbose)
+verbose: 0
+
+# Timeout for each job in seconds (None = no timeout)
+timeout: null
+
+# Pre-dispatch factor for joblib batching
+pre_dispatch: "2*n_jobs"
+
+# Batch size for joblib ('auto' = let joblib decide)
+batch_size: auto
