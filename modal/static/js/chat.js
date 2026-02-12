@@ -27,7 +27,13 @@ function addMessage(content, type) {
     const messages = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = 'message ' + type;
-    div.textContent = content;
+    if (type === 'error') {
+        div.innerHTML = '<div class="message-content"><div class="message-bubble">' + escapeHtml(content) + '</div></div>';
+    } else if (type === 'user') {
+        div.innerHTML = '<div class="message-avatar"><div class="avatar-icon">&#128100;</div></div><div class="message-content"><div class="message-label">You</div><div class="message-bubble">' + escapeHtml(content) + '</div></div>';
+    } else {
+        div.innerHTML = '<div class="message-avatar"><div class="avatar-icon">&#128722;</div></div><div class="message-content"><div class="message-label">Superstore</div><div class="message-bubble">' + escapeHtml(content) + '</div></div>';
+    }
     messages.appendChild(div);
     messages.scrollTop = messages.scrollHeight;
 }
@@ -96,7 +102,7 @@ function handleStreamEvent(event, progressDiv, itemsProcessed) {
         case 'message': progressDiv.remove(); addMessage(event.content, 'assistant'); clearJobId(); parseItemsFromResponse(event.content).forEach(item => addToGroceryList(item.name, item.qty)); break;
         case 'error': progressDiv.remove(); addMessage('Error: ' + event.message, 'error'); clearJobId(); break;
         case 'done': if (progressDiv.parentNode) progressDiv.remove(); itemStepProgress = {}; loginProgress = null; clearJobId(); break;
-        case 'status': progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Processing...')}</span>`; break;
+        case 'status': updateProgressBubble(progressDiv, `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Processing...')}</span>`); break;
         case 'login_start': loginProgress = { step: 0, thinking: null, next_goal: null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
         case 'login_step': loginProgress = { step: event.step || 0, thinking: event.thinking || null, next_goal: event.next_goal || null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
         case 'login_complete':
@@ -113,9 +119,16 @@ function handleStreamEvent(event, progressDiv, itemsProcessed) {
             itemsProcessed.push({ item: event.item, status: event.status, icon: icon, steps: event.steps || 0 });
             updateProgressDisplay(progressDiv, itemsProcessed);
             break;
-        case 'complete': progressDiv.innerHTML = `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Complete')}</span>`; break;
+        case 'complete': updateProgressBubble(progressDiv, `<span style="opacity: 0.7;">${escapeHtml(event.message || 'Complete')}</span>`); break;
     }
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+}
+
+function updateProgressBubble(progressDiv, html) {
+    const bubble = progressDiv.querySelector('.message-bubble');
+    if (bubble) {
+        bubble.innerHTML = html;
+    }
 }
 
 function updateProgressDisplay(progressDiv, itemsProcessed) {
@@ -125,7 +138,7 @@ function updateProgressDisplay(progressDiv, itemsProcessed) {
     if (loginProgress) {
         let statusText = loginProgress.step > 0 ? `Step ${loginProgress.step}` : 'Starting';
         let thinkingText = loginProgress.next_goal ? loginProgress.next_goal.substring(0, 60) : (loginProgress.thinking ? loginProgress.thinking.substring(0, 60) : null);
-        html += `<div style="opacity: 0.7; margin-bottom: 8px;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span><strong>Logging in</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
+        html += `<div style="opacity: 0.7; margin-bottom: 8px;"><span class="typing-indicator" style="display: inline-flex; vertical-align: middle; margin-right: 6px;"><span></span><span></span><span></span></span><strong>Logging in</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
         if (thinkingText) html += `<div style="margin-left: 24px; font-size: 0.75rem; opacity: 0.5; font-style: italic;">${escapeHtml(thinkingText)}${thinkingText.length >= 60 ? '...' : ''}</div>`;
         html += `</div>`;
     }
@@ -138,12 +151,20 @@ function updateProgressDisplay(progressDiv, itemsProcessed) {
     for (const [item, progress] of Object.entries(itemStepProgress)) {
         let statusText = progress.step > 0 ? `Step ${progress.step}` : 'Starting';
         let thinkingText = progress.next_goal ? progress.next_goal.substring(0, 60) : (progress.thinking ? progress.thinking.substring(0, 60) : null);
-        html += `<div style="opacity: 0.7; margin-bottom: 4px;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span><strong>${escapeHtml(item)}</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
+        html += `<div style="opacity: 0.7; margin-bottom: 4px;"><span class="typing-indicator" style="display: inline-flex; vertical-align: middle; margin-right: 6px;"><span></span><span></span><span></span></span><strong>${escapeHtml(item)}</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
         if (thinkingText) html += `<div style="margin-left: 24px; font-size: 0.75rem; opacity: 0.5; font-style: italic;">${escapeHtml(thinkingText)}${thinkingText.length >= 60 ? '...' : ''}</div>`;
         html += `</div>`;
     }
     html += '</div>';
-    progressDiv.innerHTML = html;
+    updateProgressBubble(progressDiv, html);
+}
+
+function createProgressDiv() {
+    const progressDiv = document.createElement('div');
+    progressDiv.className = 'message assistant';
+    progressDiv.id = 'current-progress';
+    progressDiv.innerHTML = '<div class="message-avatar"><div class="avatar-icon">&#128722;</div></div><div class="message-content"><div class="message-label">Superstore</div><div class="message-bubble"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>';
+    return progressDiv;
 }
 
 async function sendMessage() {
@@ -161,10 +182,7 @@ async function sendMessage() {
         pollingInterval = null;
     }
 
-    const progressDiv = document.createElement('div');
-    progressDiv.className = 'message assistant';
-    progressDiv.id = 'current-progress';
-    progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+    const progressDiv = createProgressDiv();
     document.getElementById('messages').appendChild(progressDiv);
 
     // Create AbortController for this request
@@ -295,10 +313,7 @@ async function restoreJobStatus() {
     let itemsProcessed = [];
 
     if (!progressDiv) {
-        progressDiv = document.createElement('div');
-        progressDiv.className = 'message assistant';
-        progressDiv.id = 'current-progress';
-        progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+        progressDiv = createProgressDiv();
         document.getElementById('messages').appendChild(progressDiv);
     }
 
@@ -331,13 +346,13 @@ async function restoreJobStatus() {
                         parseItemsFromResponse(updatedJob.final_message).forEach(item => addToGroceryList(item.name, item.qty));
                     } else {
                         const successCount = updatedJob.success_count || itemsProcessed.length;
-                        progressDiv.innerHTML = `<span style="opacity: 0.7;">Complete - ${successCount} items added to cart</span>`;
+                        updateProgressBubble(progressDiv, `<span style="opacity: 0.7;">Complete - ${successCount} items added to cart</span>`);
                     }
                 } else if (updatedJob.status === 'error') {
                     progressDiv.remove();
                     addMessage('Error: ' + (updatedJob.error || 'Unknown error'), 'error');
                 } else if (updatedJob.status === 'expired') {
-                    progressDiv.innerHTML = '<span style="opacity: 0.7;">Job expired</span>';
+                    updateProgressBubble(progressDiv, '<span style="opacity: 0.7;">Job expired</span>');
                 }
                 clearJobId();
                 setInputEnabled(true);
@@ -352,7 +367,7 @@ async function restoreJobStatus() {
         } else {
             displayJobState(job, progressDiv, itemsProcessed);
             const successCount = job.success_count || itemsProcessed.length;
-            progressDiv.innerHTML = `<span style="opacity: 0.7;">Complete - ${successCount} items added to cart</span>`;
+            updateProgressBubble(progressDiv, `<span style="opacity: 0.7;">Complete - ${successCount} items added to cart</span>`);
         }
         clearJobId();
         setInputEnabled(true);
@@ -363,7 +378,7 @@ async function restoreJobStatus() {
         setInputEnabled(true);
     } else {
         // expired or unknown status
-        progressDiv.innerHTML = '<span style="opacity: 0.7;">Job expired or unavailable</span>';
+        updateProgressBubble(progressDiv, '<span style="opacity: 0.7;">Job expired or unavailable</span>');
         clearJobId();
         setInputEnabled(true);
     }

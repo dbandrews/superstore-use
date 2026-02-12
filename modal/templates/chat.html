@@ -7,11 +7,22 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}">
 </head>
 <body>
-    <div class="header"><h1>superstore-use</h1></div>
+    <div class="header">
+        <h1>SUPERSTORE</h1>
+        <div class="header-line"></div>
+    </div>
     <div class="main-container">
         <div class="chat-container">
             <div class="messages" id="messages">
-                <div class="message assistant">What would you like to cook or buy?</div>
+                <div class="message assistant">
+                    <div class="message-avatar">
+                        <div class="avatar-icon">&#128722;</div>
+                    </div>
+                    <div class="message-content">
+                        <div class="message-label">Superstore</div>
+                        <div class="message-bubble">What would you like to cook or buy?</div>
+                    </div>
+                </div>
             </div>
             <div class="suggestions" id="suggestions">
                 <span class="suggestion" onclick="sendSuggestion(this)">pasta carbonara</span>
@@ -32,7 +43,7 @@
                 <span class="item-count" id="item-count">0</span>
             </div>
             <div class="grocery-list" id="grocery-list">
-                <div class="empty-list" id="empty-list"><div class="icon">—</div><p>No items yet</p></div>
+                <div class="empty-list" id="empty-list"><div class="icon">&#128722;</div><p>No items yet</p></div>
             </div>
             <div class="sidebar-footer">
                 <div class="add-item-form">
