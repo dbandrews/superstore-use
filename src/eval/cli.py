@@ -92,7 +92,7 @@ def run_eval_hydra() -> None:
         harness = EvalHarness(config)
 
         if len(config.runs) == 1:
-            result = asyncio.run(harness.run_single(config.runs[0]))
+            result = asyncio.run(harness.run_single(config.runs[0], output_dir=hydra_output_dir))
             print("\n" + result.get_summary())
 
             # Save result to Hydra output directory
@@ -108,7 +108,7 @@ def run_eval_hydra() -> None:
             elif result.profile_dir:
                 print(f"Temp profile kept at: {result.profile_dir}")
         else:
-            session = asyncio.run(harness.run_all())
+            session = asyncio.run(harness.run_all(output_dir=hydra_output_dir))
             print("\n" + session.get_summary())
 
             # Save session to Hydra output directory

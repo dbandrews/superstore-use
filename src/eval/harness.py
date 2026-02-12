@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from browser_use import Agent, Browser
+from browser_use import Agent, AgentHistoryList, Browser
 
 from src.core.config import load_config
 from src.core.success import detect_success_from_history
@@ -210,7 +210,7 @@ class EvalHarness:
         run: EvalRun,
         browser: Browser,
         llm,
-    ) -> ItemResult:
+    ) -> tuple[ItemResult, AgentHistoryList | None]:
         """Run the agent to add a single item to cart.
 
         Args:
@@ -220,7 +220,7 @@ class EvalHarness:
             llm: LLM instance
 
         Returns:
-            ItemResult with outcome details
+            Tuple of (ItemResult with outcome details, agent history if available)
         """
         start_time = time.time()
         steps_taken = 0
@@ -297,13 +297,14 @@ class EvalHarness:
             error_message=error_message,
             token_usage=token_usage,
             estimated_cost_usd=estimated_cost_usd,
-        )
+        ), history
 
-    async def run_single(self, run: EvalRun) -> EvalResult:
+    async def run_single(self, run: EvalRun, output_dir: Path | None = None) -> EvalResult:
         """Execute a single evaluation run.
 
         Args:
             run: Evaluation run configuration
+            output_dir: Optional directory to save agent trace files
 
         Returns:
             EvalResult with complete outcome details
@@ -345,7 +346,7 @@ class EvalHarness:
                 # Create fresh browser for this item
                 item_browser = self._create_browser(run, str(temp_profile))
                 try:
-                    item_result = await self._run_single_item(
+                    item_result, history = await self._run_single_item(
                         item=item,
                         run=run,
                         browser=item_browser,
@@ -364,6 +365,18 @@ class EvalHarness:
                 result.item_results.append(item_result)
                 result.metrics.item_durations[item] = item_result.duration_seconds
                 result.metrics.steps_per_item[item] = item_result.steps_taken
+
+                # Save agent trace to output directory
+                if output_dir and history:
+                    try:
+                        trace_dir = output_dir / "traces"
+                        trace_dir.mkdir(parents=True, exist_ok=True)
+                        safe_item = item.replace("/", "_").replace(" ", "_")
+                        trace_path = trace_dir / f"item_{i}_{safe_item}_trace.json"
+                        history.save_to_file(trace_path)
+                        self._log(f"  Trace saved: {trace_path}")
+                    except Exception as e:
+                        self._log(f"  Warning: failed to save trace for {item}: {e}")
 
                 # Track cost metrics per item
                 result.cost_metrics.tokens_per_item[item] = item_result.token_usage
@@ -495,8 +508,11 @@ class EvalHarness:
         self._log(f"Run complete: {result.status} ({result.success_rate:.0%}{tokens_summary}{cost_summary})")
         return result
 
-    async def run_all(self) -> EvalSession:
+    async def run_all(self, output_dir: Path | None = None) -> EvalSession:
         """Execute all configured evaluation runs.
+
+        Args:
+            output_dir: Optional directory to save agent trace files
 
         Returns:
             EvalSession with results from all runs
@@ -508,12 +524,12 @@ class EvalHarness:
 
         for i, run in enumerate(self.config.runs, 1):
             self._log(f"=== Run {i}/{len(self.config.runs)}: {run.name} ===")
-            result = await self.run_single(run)
+            result = await self.run_single(run, output_dir=output_dir)
             session.add_result(result)
 
             # Save intermediate result
-            output_dir = Path(self.config.output_dir)
-            result.to_file(output_dir / f"{run.name}_result.json")
+            save_dir = Path(self.config.output_dir)
+            result.to_file(save_dir / f"{run.name}_result.json")
 
         session.finalize()
 
