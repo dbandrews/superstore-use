@@ -8,8 +8,8 @@ defaults:
 name: eval
 items:
   # Easy - basic items with quantities
-  - 6 bananas
-  - oat milk unsweetened 1 L
+  - 1 bunch of bananas
+  - oat milk unsweetened 1.75L
   - 2 lb bag of carrots
   - 2 cans of Campbell's tomato soup
   - 10 lb bag of russet potatoes
@@ -25,6 +25,10 @@ output_dir: ./eval_results
 
 max_steps: 15
 timeout_seconds: 300.0
+
+# Retry configuration for handling transient CDP/browser errors
+max_retries: 2  # Number of retry attempts per item (0 = no retries)
+retry_delay: 3.0  # Seconds to wait between retries
 
 # Runtime options (not part of EvalConfig, used by CLI)
 dry_run: false

@@ -39,12 +39,76 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+class TimestampedFormatter(logging.Formatter):
+    """Custom formatter that adds timestamps to each log line."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        level = record.levelname
+        name = record.name
+        # Format: [timestamp] LEVEL    [name] message
+        return f"[{timestamp}] {level:<8} [{name}] {record.getMessage()}"
+
+
+def setup_logging(output_dir: Path) -> tuple[logging.FileHandler, logging.StreamHandler]:
+    """Configure logging to capture browser-use output with timestamps.
+
+    Args:
+        output_dir: Directory to write log file to
+
+    Returns:
+        Tuple of (file_handler, stream_handler) for cleanup
+    """
+    log_file = output_dir / "eval.log"
+    formatter = TimestampedFormatter()
+
+    # File handler - writes all logs to file
+    file_handler = logging.FileHandler(log_file, mode="w")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    # Stream handler - writes to stdout with timestamps
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(formatter)
+
+    # Get the root logger and browser-use related loggers
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    # Remove any existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+
+    # Add our handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(stream_handler)
+
+    # Ensure browser-use loggers inherit from root
+    for logger_name in ["browser_use", "Agent", "tools", "BrowserSession"]:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = True
+
+    return file_handler, stream_handler
+
+
+def cleanup_logging(file_handler: logging.FileHandler, stream_handler: logging.StreamHandler) -> None:
+    """Clean up logging handlers."""
+    root_logger = logging.getLogger()
+    root_logger.removeHandler(file_handler)
+    root_logger.removeHandler(stream_handler)
+    file_handler.close()
+    stream_handler.close()
 
 
 def run_eval_hydra() -> None:
@@ -53,9 +117,10 @@ def run_eval_hydra() -> None:
     from hydra.core.hydra_config import HydraConfig
     from omegaconf import DictConfig, OmegaConf
 
+    from src.eval.harness import EvalHarness, cleanup_temp_profile
+
     # Import to register configs before Hydra runs
     from src.eval.hydra_config import convert_to_pydantic
-    from src.eval.harness import EvalHarness, cleanup_temp_profile
 
     @hydra.main(version_base=None, config_path="../../conf", config_name="config")
     def hydra_main(cfg: DictConfig) -> None:
@@ -66,64 +131,77 @@ def run_eval_hydra() -> None:
         # Get Hydra output directory for saving results
         hydra_output_dir = Path(HydraConfig.get().runtime.output_dir)
 
-        # Print config summary
-        print("\n" + "=" * 60)
-        print("EVALUATION CONFIGURATION")
-        print("=" * 60)
-        print(f"Name: {config.name}")
-        print(f"Runs: {len(config.runs)}")
-        print(f"Output: {hydra_output_dir}")
+        # Set up logging to file and stdout with timestamps
+        file_handler, stream_handler = setup_logging(hydra_output_dir)
+        eval_logger = logging.getLogger("Eval")
 
-        for i, run in enumerate(config.runs, 1):
-            print(f"\nRun {i}: {run.name}")
-            print(f"  Items: {run.items}")
-            print(f"  LLM: {run.llm.model} ({run.llm.provider})")
-            print(f"  Headless: {run.browser.headless}")
-            print(f"  Max steps: {run.max_steps}")
+        try:
+            # Print config summary
+            eval_logger.info("=" * 60)
+            eval_logger.info("EVALUATION CONFIGURATION")
+            eval_logger.info("=" * 60)
+            eval_logger.info(f"Name: {config.name}")
+            eval_logger.info(f"Runs: {len(config.runs)}")
+            eval_logger.info(f"Output: {hydra_output_dir}")
+            eval_logger.info(f"Log file: {hydra_output_dir / 'eval.log'}")
 
-        print("=" * 60 + "\n")
+            for i, run in enumerate(config.runs, 1):
+                eval_logger.info(f"Run {i}: {run.name}")
+                eval_logger.info(f"  Items: {run.items}")
+                eval_logger.info(f"  LLM: {run.llm.model} ({run.llm.provider})")
+                eval_logger.info(f"  Headless: {run.browser.headless}")
+                eval_logger.info(f"  Max steps: {run.max_steps}")
+                eval_logger.info(f"  Retries: {run.max_retries} (delay: {run.retry_delay}s)")
 
-        # Check for dry run via Hydra override
-        if OmegaConf.select(cfg, "dry_run", default=False):
-            print("Dry run - exiting without executing")
-            return
+            eval_logger.info("=" * 60)
 
-        # Run the evaluation
-        harness = EvalHarness(config)
+            # Check for dry run via Hydra override
+            if OmegaConf.select(cfg, "dry_run", default=False):
+                eval_logger.info("Dry run - exiting without executing")
+                return
 
-        if len(config.runs) == 1:
-            result = asyncio.run(harness.run_single(config.runs[0], output_dir=hydra_output_dir))
-            print("\n" + result.get_summary())
+            # Run the evaluation with logger-based progress callback
+            def log_progress(msg: str) -> None:
+                eval_logger.info(msg)
 
-            # Save result to Hydra output directory
-            result_path = hydra_output_dir / "eval_result.json"
-            result.to_file(result_path)
-            print(f"\nResult saved to: {result_path}")
+            harness = EvalHarness(config, on_progress=log_progress)
 
-            # Clean up temp profile if cleanup_profile is set (defaults to false = keep profiles)
-            cleanup_profile = OmegaConf.select(cfg, "cleanup_profile", default=False)
-            if cleanup_profile and result.profile_dir:
-                cleanup_temp_profile(Path(result.profile_dir))
-                print("Cleaned up temp profile")
-            elif result.profile_dir:
-                print(f"Temp profile kept at: {result.profile_dir}")
-        else:
-            session = asyncio.run(harness.run_all(output_dir=hydra_output_dir))
-            print("\n" + session.get_summary())
+            if len(config.runs) == 1:
+                result = asyncio.run(harness.run_single(config.runs[0]))
+                eval_logger.info(result.get_summary())
 
-            # Save session to Hydra output directory
-            session_path = hydra_output_dir / "session.json"
-            session.to_file(session_path)
-            print(f"\nSession saved to: {session_path}")
+                # Save result to Hydra output directory
+                result_path = hydra_output_dir / "eval_result.json"
+                result.to_file(result_path)
+                eval_logger.info(f"Result saved to: {result_path}")
 
-            # Clean up temp profiles if cleanup_profile is set (defaults to false = keep profiles)
-            cleanup_profile = OmegaConf.select(cfg, "cleanup_profile", default=False)
-            for result in session.results:
+                # Clean up temp profile if cleanup_profile is set (defaults to false = keep profiles)
+                cleanup_profile = OmegaConf.select(cfg, "cleanup_profile", default=False)
                 if cleanup_profile and result.profile_dir:
                     cleanup_temp_profile(Path(result.profile_dir))
-                    print(f"Cleaned up temp profile: {result.profile_dir}")
+                    eval_logger.info("Cleaned up temp profile")
                 elif result.profile_dir:
-                    print(f"Temp profile kept at: {result.profile_dir}")
+                    eval_logger.info(f"Temp profile kept at: {result.profile_dir}")
+            else:
+                session = asyncio.run(harness.run_all())
+                eval_logger.info(session.get_summary())
+
+                # Save session to Hydra output directory
+                session_path = hydra_output_dir / "session.json"
+                session.to_file(session_path)
+                eval_logger.info(f"Session saved to: {session_path}")
+
+                # Clean up temp profiles if cleanup_profile is set (defaults to false = keep profiles)
+                cleanup_profile = OmegaConf.select(cfg, "cleanup_profile", default=False)
+                for result in session.results:
+                    if cleanup_profile and result.profile_dir:
+                        cleanup_temp_profile(Path(result.profile_dir))
+                        eval_logger.info(f"Cleaned up temp profile: {result.profile_dir}")
+                    elif result.profile_dir:
+                        eval_logger.info(f"Temp profile kept at: {result.profile_dir}")
+        finally:
+            # Clean up logging handlers
+            cleanup_logging(file_handler, stream_handler)
 
     # Run Hydra
     hydra_main()
@@ -142,6 +220,7 @@ def list_models() -> None:
             # Read and parse YAML to show model details
             try:
                 import yaml
+
                 with open(yaml_file) as f:
                     config = yaml.safe_load(f)
                 model = config.get("model", "unknown")
@@ -189,7 +268,9 @@ def compare_results(result_files: list[str]) -> None:
     print("\n" + "=" * 110)
     print("COMPARISON SUMMARY")
     print("=" * 110)
-    print(f"{'Run Name':<25} {'LLM':<20} {'Status':<10} {'Success':<8} {'In/Out/Cached':<20} {'Cost':<12} {'Duration':<10}")
+    print(
+        f"{'Run Name':<25} {'LLM':<20} {'Status':<10} {'Success':<8} {'In/Out/Cached':<20} {'Cost':<12} {'Duration':<10}"
+    )
     print("-" * 110)
 
     for path, result in results:
@@ -197,14 +278,16 @@ def compare_results(result_files: list[str]) -> None:
         llm = result.config_summary.get("llm_model", "unknown")[:18]
         usage = result.cost_metrics.token_usage
         if usage.total_tokens > 0:
-            cached_str = f"+{usage.cached_tokens//1000}k" if usage.cached_tokens > 0 else ""
-            tokens = f"{usage.input_tokens//1000}k/{usage.output_tokens//1000}k{cached_str}"
+            cached_str = f"+{usage.cached_tokens // 1000}k" if usage.cached_tokens > 0 else ""
+            tokens = f"{usage.input_tokens // 1000}k/{usage.output_tokens // 1000}k{cached_str}"
         else:
             tokens = "N/A"
         # Prefer total_cost from token usage (more detailed), fall back to estimated_cost_usd
         cost = usage.total_cost if usage.total_cost > 0 else result.cost_metrics.estimated_cost_usd
         cost_str = f"${cost:.4f}" if cost else "N/A"
-        print(f"{result.run_name:<25} {llm:<20} {result.status:<10} {result.success_rate:.0%}      {tokens:<20} {cost_str:<12} {duration}")
+        print(
+            f"{result.run_name:<25} {llm:<20} {result.status:<10} {result.success_rate:.0%}      {tokens:<20} {cost_str:<12} {duration}"
+        )
 
     print("=" * 110)
 
@@ -241,7 +324,10 @@ def compare_results(result_files: list[str]) -> None:
         print(f"\n  [{llm}]")
         if result.cart_items:
             for cart_item in result.cart_items:
-                print(f"    - {cart_item.quantity}x {cart_item.name}" + (f" ({cart_item.price})" if cart_item.price else ""))
+                print(
+                    f"    - {cart_item.quantity}x {cart_item.name}"
+                    + (f" ({cart_item.price})" if cart_item.price else "")
+                )
         else:
             print("    (no cart items)")
         if not judge_enabled:
@@ -255,11 +341,25 @@ def compare_results(result_files: list[str]) -> None:
         usage = result.cost_metrics.token_usage
         if usage.total_tokens > 0:
             print(f"\n  [{llm}]")
-            print(f"    Input:  {usage.input_tokens:,}" + (f" ({usage.cached_tokens:,} cached, {usage.non_cached_input_tokens:,} new)" if usage.cached_tokens > 0 else ""))
+            print(
+                f"    Input:  {usage.input_tokens:,}"
+                + (
+                    f" ({usage.cached_tokens:,} cached, {usage.non_cached_input_tokens:,} new)"
+                    if usage.cached_tokens > 0
+                    else ""
+                )
+            )
             print(f"    Output: {usage.output_tokens:,}")
             print(f"    Total:  {usage.total_tokens:,}")
             if usage.total_cost > 0:
-                print(f"    Cost:   ${usage.total_cost:.4f}" + (f" (in: ${usage.input_cost:.4f}, out: ${usage.output_cost:.4f}, cache: ${usage.cached_cost:.4f})" if usage.input_cost > 0 else ""))
+                print(
+                    f"    Cost:   ${usage.total_cost:.4f}"
+                    + (
+                        f" (in: ${usage.input_cost:.4f}, out: ${usage.output_cost:.4f}, cache: ${usage.cached_cost:.4f})"
+                        if usage.input_cost > 0
+                        else ""
+                    )
+                )
             if usage.entry_count > 0:
                 print(f"    Calls:  {usage.entry_count}")
             # Show by-model if available
@@ -325,8 +425,8 @@ def list_runs(outputs_dir: str = "outputs", limit: int = 10) -> None:
             llm = result.config_summary.get("llm_model", "unknown")[:16]
             usage = result.cost_metrics.token_usage
             if usage.total_tokens > 0:
-                cached_str = f"+{usage.cached_tokens//1000}k" if usage.cached_tokens > 0 else ""
-                tokens = f"{usage.input_tokens//1000}k/{usage.output_tokens//1000}k{cached_str}"
+                cached_str = f"+{usage.cached_tokens // 1000}k" if usage.cached_tokens > 0 else ""
+                tokens = f"{usage.input_tokens // 1000}k/{usage.output_tokens // 1000}k{cached_str}"
             else:
                 tokens = "N/A"
             # Prefer total_cost from token usage, fall back to estimated_cost_usd
@@ -337,8 +437,8 @@ def list_runs(outputs_dir: str = "outputs", limit: int = 10) -> None:
             print(f"{result_path}: (error: {e})")
 
     print("=" * 115)
-    print(f"\nTo compare runs, use:")
-    print(f"  uv run -m src.eval.cli compare <path1> <path2> ...")
+    print("\nTo compare runs, use:")
+    print("  uv run -m src.eval.cli compare <path1> <path2> ...")
 
 
 def browse_profile(profile_path: str, url: str | None = None) -> None:
@@ -406,6 +506,8 @@ HYDRA OVERRIDES:
     +experiment=NAME    Use experiment preset (quick_test, full_comparison)
     'items=[a,b,c]'     Override items list
     max_steps=N         Override max steps
+    max_retries=N       Retry attempts per item on CDP errors (default: 2)
+    retry_delay=N       Seconds between retries (default: 3.0)
     dry_run=true        Print config without running
     cleanup_profile=true  Remove temp browser profile after run (default: keep it)
     hydra/launcher=joblib  Run multirun jobs in parallel (use with --multirun)

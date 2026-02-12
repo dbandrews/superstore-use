@@ -1,8 +1,0 @@
-# Baidu: ERNIE 4.5 21B A3B Thinking
-# $0.0700/M input, $0.2800/M output, 131,072 context
-model: baidu/ernie-4.5-21b-a3b-thinking
-provider: openrouter
-temperature: 0.0
-use_vision: false
-base_url: https://openrouter.ai/api/v1
-api_key_env: OPENROUTER_API_KEY

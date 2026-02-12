@@ -221,6 +221,14 @@ class EvalRun(BaseModel):
         default=300.0,
         description="Overall timeout for the run in seconds",
     )
+    max_retries: int = Field(
+        default=2,
+        description="Number of retry attempts per item on CDP/browser errors (0 = no retries)",
+    )
+    retry_delay: float = Field(
+        default=3.0,
+        description="Seconds to wait between retry attempts",
+    )
     tags: list[str] = Field(
         default_factory=list,
         description="Optional tags for filtering/grouping results",

@@ -84,6 +84,8 @@ class EvalConfig:
     # Run parameters
     max_steps: int = 30
     timeout_seconds: float = 300.0
+    max_retries: int = 2  # Number of retry attempts per item on CDP/browser errors
+    retry_delay: float = 3.0  # Seconds to wait between retry attempts
 
     # URLs
     base_url: str = "https://www.realcanadiansuperstore.ca/en"
@@ -162,6 +164,8 @@ def convert_to_pydantic(cfg: DictConfig) -> Any:
         judge=judge_config,
         max_steps=cfg_dict["max_steps"],
         timeout_seconds=cfg_dict["timeout_seconds"],
+        max_retries=cfg_dict.get("max_retries", 2),
+        retry_delay=cfg_dict.get("retry_delay", 3.0),
     )
 
     # Create the EvalConfig with a single run

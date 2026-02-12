@@ -21,12 +21,10 @@ from src.core.success import detect_success_from_history
 from src.eval.cart_checker import (
     extract_cart_contents,
     judge_cart_contents,
-    match_cart_to_requested,
 )
-from src.eval.config import EvalConfig, EvalRun, JudgeConfig, LLMConfig
+from src.eval.config import EvalConfig, EvalRun, LLMConfig
 from src.eval.results import (
     CartItem,
-    CostMetrics,
     EvalResult,
     EvalSession,
     ItemResult,
@@ -49,18 +47,21 @@ def get_llm_instance(llm_config: LLMConfig):
     # Use browser-use's model wrappers for compatibility
     if llm_config.provider == "groq":
         from browser_use import ChatGroq
+
         return ChatGroq(
             model=llm_config.model,
             temperature=llm_config.temperature,
         )
     elif llm_config.provider == "openai":
         from browser_use import ChatOpenAI
+
         return ChatOpenAI(
             model=llm_config.model,
             temperature=llm_config.temperature,
         )
     elif llm_config.provider == "anthropic":
         from browser_use import ChatAnthropic
+
         return ChatAnthropic(
             model=llm_config.model,
             temperature=llm_config.temperature,
@@ -71,6 +72,7 @@ def get_llm_instance(llm_config: LLMConfig):
         # free tier providers don't support structured output (response_format)
         # which browser-use requires. Use paid tier models instead.
         from browser_use import ChatOpenAI
+
         api_key_env = llm_config.api_key_env or "OPENROUTER_API_KEY"
         api_key = os.getenv(api_key_env)
         if not api_key:
@@ -116,6 +118,36 @@ def cleanup_temp_profile(profile_path: Path) -> None:
             shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception:
         pass
+
+
+# Patterns that indicate retryable CDP/browser errors
+CDP_ERROR_PATTERNS = [
+    "Target",  # "Target not found", "Target detached"
+    "CDP",  # CDP connection errors
+    "not initialized",  # "Root CDP client not initialized"
+    "wasn't found",  # "'Page.enable' wasn't found"
+    "detached from document",  # "Node is detached from document"
+    "box model",  # "Could not compute box model"
+    "session",  # Session-related errors
+    "Failed to establish",  # Connection failures
+    "Failed to get session",  # Session initialization failures
+    "RuntimeError",  # General runtime errors from browser-use
+]
+
+
+def is_retryable_error(error_message: str) -> bool:
+    """Check if an error message indicates a retryable CDP/browser error.
+
+    Args:
+        error_message: The error message to check
+
+    Returns:
+        True if the error is likely retryable
+    """
+    if not error_message:
+        return False
+    error_lower = error_message.lower()
+    return any(pattern.lower() in error_lower for pattern in CDP_ERROR_PATTERNS)
 
 
 class EvalHarness:
@@ -166,12 +198,14 @@ class EvalHarness:
         # Build browser arguments
         args = ["--disable-features=LockProfileCookieDatabase"]
         if browser_config.use_stealth:
-            args.extend([
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-            ])
+            args.extend(
+                [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                ]
+            )
 
         return Browser(
             headless=browser_config.headless,
@@ -197,9 +231,7 @@ class EvalHarness:
         """
         try:
             # Try to get custom template from run config
-            return run.prompt.get_template(
-                default_path=self._app_config.prompts.add_item
-            )
+            return run.prompt.get_template(default_path=self._app_config.prompts.add_item)
         except (FileNotFoundError, ValueError):
             # Fall back to loading from app config
             return self._app_config.load_prompt("add_item", item="{item}", base_url="{base_url}")
@@ -326,6 +358,8 @@ class EvalHarness:
                 "judge_model": run.judge.model,
                 "judge_provider": run.judge.provider,
                 "judge_enabled": run.judge.enabled,
+                "max_retries": run.max_retries,
+                "retry_delay": run.retry_delay,
             },
             metrics=RunMetrics(start_time=datetime.now()),
         )
@@ -343,24 +377,48 @@ class EvalHarness:
             for i, item in enumerate(run.items, 1):
                 self._log(f"Adding item {i}/{len(run.items)}: {item}")
 
-                # Create fresh browser for this item
-                item_browser = self._create_browser(run, str(temp_profile))
-                try:
-                    item_result, history = await self._run_single_item(
-                        item=item,
-                        run=run,
-                        browser=item_browser,
-                        llm=llm,
-                    )
-                finally:
-                    # Wait for profile to sync before killing browser
-                    await asyncio.sleep(2)
+                item_result = None
+                last_error = None
+
+                # Retry loop for handling CDP/browser errors
+                for attempt in range(run.max_retries + 1):
+                    if attempt > 0:
+                        self._log(f"  Retry {attempt}/{run.max_retries} for {item} after {run.retry_delay}s delay...")
+                        await asyncio.sleep(run.retry_delay)
+
+                    # Create fresh browser for this attempt
+                    item_browser = self._create_browser(run, str(temp_profile))
                     try:
-                        await item_browser.kill()
-                    except Exception:
-                        pass
-                    # Additional delay for disk sync
-                    await asyncio.sleep(1)
+                        item_result = await self._run_single_item(
+                            item=item,
+                            run=run,
+                            browser=item_browser,
+                            llm=llm,
+                        )
+                    finally:
+                        # Wait for profile to sync before killing browser
+                        await asyncio.sleep(2)
+                        try:
+                            await item_browser.kill()
+                        except Exception:
+                            pass
+                        # Additional delay for disk sync
+                        await asyncio.sleep(1)
+
+                    # Check if we should retry
+                    if item_result.status == "error" and item_result.error_message:
+                        if is_retryable_error(item_result.error_message) and attempt < run.max_retries:
+                            last_error = item_result.error_message
+                            self._log(f"  [-] {item}: retryable error - {item_result.error_message[:80]}...")
+                            continue  # Retry
+                    # Success, timeout, or non-retryable error - stop retrying
+                    break
+
+                # If we exhausted retries, append info about retry attempts
+                if last_error and item_result.status == "error":
+                    item_result.error_message = (
+                        f"Failed after {run.max_retries + 1} attempts. Last error: {item_result.error_message}"
+                    )
 
                 result.item_results.append(item_result)
                 result.metrics.item_durations[item] = item_result.duration_seconds
@@ -388,9 +446,15 @@ class EvalHarness:
                     result.cost_metrics.estimated_cost_usd += item_result.estimated_cost_usd
 
                 status_icon = "[+]" if item_result.status == "success" else "[-]"
-                tokens_str = f", {item_result.token_usage.total_tokens} tokens" if item_result.token_usage.total_tokens > 0 else ""
+                tokens_str = (
+                    f", {item_result.token_usage.total_tokens} tokens"
+                    if item_result.token_usage.total_tokens > 0
+                    else ""
+                )
                 cost_str = f", ${item_result.estimated_cost_usd:.4f}" if item_result.estimated_cost_usd else ""
-                self._log(f"  {status_icon} {item}: {item_result.status} ({item_result.duration_seconds:.1f}s{tokens_str}{cost_str})")
+                self._log(
+                    f"  {status_icon} {item}: {item_result.status} ({item_result.duration_seconds:.1f}s{tokens_str}{cost_str})"
+                )
 
             # Verify cart contents via API using Playwright directly
             self._log("Extracting cart contents via API...")
