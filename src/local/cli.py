@@ -199,7 +199,7 @@ async def login_and_save(headless: bool = True):
                (this indicates a saved login), simply click on that email to proceed.
             5. If you don't see the email displayed, enter username: {username}
             6. Then enter password: {password}
-            7. Click the sign in button.
+            7. Click the sign in button. Wait at least 10 seconds for the login to complete. Check for spinners or loading indicators.
             8. Wait for "My Account" at top right to confirm login.
             Complete when logged in successfully.
             """

@@ -1,0 +1,7 @@
+# Anthropic: Claude Sonnet 4.5
+# $3.00/M input, $15.00/M output, 200k context
+model: claude-3-5-sonnet-20241022
+provider: anthropic
+temperature: 0.0
+use_vision: true
+api_key_env: ANTHROPIC_API_KEY

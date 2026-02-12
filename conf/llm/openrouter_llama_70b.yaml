@@ -1,8 +1,0 @@
-# Llama 3.3 70B via OpenRouter - best large model value
-# $0.0001/1K tokens, 131k context
-model: meta-llama/llama-3.3-70b-instruct
-provider: openrouter
-temperature: 0.0
-use_vision: false
-base_url: https://openrouter.ai/api/v1
-api_key_env: OPENROUTER_API_KEY

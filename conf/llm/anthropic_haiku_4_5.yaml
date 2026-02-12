@@ -1,0 +1,7 @@
+# Anthropic: Claude Haiku 4.5
+# $0.80/M input, $4.00/M output, 200k context
+model: claude-3-5-haiku-20241022
+provider: anthropic
+temperature: 0.0
+use_vision: true
+api_key_env: ANTHROPIC_API_KEY
