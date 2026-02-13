@@ -277,6 +277,7 @@ class EvalHarness:
                 browser_session=browser,
                 use_vision=run.llm.use_vision,
                 calculate_cost=True,
+                use_judge=False,
             )
 
             # Track steps via callback
@@ -378,6 +379,7 @@ class EvalHarness:
                 self._log(f"Adding item {i}/{len(run.items)}: {item}")
 
                 item_result = None
+                history = None
                 last_error = None
 
                 # Retry loop for handling CDP/browser errors
@@ -389,7 +391,7 @@ class EvalHarness:
                     # Create fresh browser for this attempt
                     item_browser = self._create_browser(run, str(temp_profile))
                     try:
-                        item_result = await self._run_single_item(
+                        item_result, history = await self._run_single_item(
                             item=item,
                             run=run,
                             browser=item_browser,
@@ -532,7 +534,7 @@ class EvalHarness:
                                     if item_judgment.matched_cart_item:
                                         item_result.matched_cart_item = CartItem(
                                             name=item_judgment.matched_cart_item,
-                                            quantity=item_judgment.matched_quantity or 1,
+                                            quantity=int(item_judgment.matched_quantity or 1),
                                         )
                                 elif item_judgment.found:
                                     # Found but wrong quantity

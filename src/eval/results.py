@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TokenUsage(BaseModel):
@@ -156,6 +156,13 @@ class CartItem(BaseModel):
     quantity: int = Field(default=1, description="Quantity in cart")
     price: str | None = Field(default=None, description="Price as displayed (e.g., '$4.99')")
     raw_text: str | None = Field(default=None, description="Raw text extracted from cart")
+
+    @field_validator("quantity", mode="before")
+    @classmethod
+    def coerce_quantity_to_int(cls, v):
+        if isinstance(v, float):
+            return int(v)
+        return v
 
     def matches(self, target: str, fuzzy: bool = True) -> bool:
         """Check if this cart item matches a target item string.
