@@ -57,17 +57,29 @@ window_height = 1080
 use_proxy = true
 use_stealth = true
 
-# Login task - slower timing for auth server latency
+# Login pre-check - fast timing for DOM-only check (no LLM)
+[browser.modal.login_check]
+wait_between_actions = 0.5
+min_wait_page_load = 0.5
+wait_for_network_idle = 0.5
+
+# Login task - slower timing for auth server latency (full LLM agent flow)
 [browser.modal.login]
-wait_between_actions = 5.0
-min_wait_page_load = 5.0
-wait_for_network_idle = 5.0
+wait_between_actions = 3.0
+min_wait_page_load = 3.0
+wait_for_network_idle = 3.0
 
 # Add item task - faster timing for browsing
 [browser.modal.add_item]
 wait_between_actions = 0.1
 min_wait_page_load = 0.1
 wait_for_network_idle = 0.1
+
+# View cart task - slower timing to let JS-heavy cart page render
+[browser.modal.view_cart]
+wait_between_actions = 2.0
+min_wait_page_load = 3.0
+wait_for_network_idle = 3.0
 
 [llm]
 chat_model = "llama-3.3-70b-versatile"
@@ -76,7 +88,7 @@ browser_model = "openai/gpt-oss-120b"
 browser_use_vision = false
 
 [agent]
-max_steps_login = 50
+max_steps_login = 20
 max_steps_add_item = 30
 max_steps_checkout = 100
 max_steps_place_order = 10

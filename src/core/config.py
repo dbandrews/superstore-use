@@ -62,6 +62,22 @@ class BrowserModalAddItemConfig(BaseModel):
     wait_for_network_idle: float = 2.5
 
 
+class BrowserModalLoginCheckConfig(BaseModel):
+    """Modal login pre-check timing - fast DOM-only check (no LLM)."""
+
+    wait_between_actions: float = 0.5
+    min_wait_page_load: float = 0.5
+    wait_for_network_idle: float = 0.5
+
+
+class BrowserModalViewCartConfig(BaseModel):
+    """Modal view_cart timing - slower to let JS-heavy cart page render."""
+
+    wait_between_actions: float = 2.0
+    min_wait_page_load: float = 3.0
+    wait_for_network_idle: float = 3.0
+
+
 class BrowserModalConfig(BaseModel):
     """Modal deployment browser settings."""
 
@@ -72,8 +88,10 @@ class BrowserModalConfig(BaseModel):
     window_height: int = 1080
     use_proxy: bool = True
     use_stealth: bool = True
+    login_check: BrowserModalLoginCheckConfig = Field(default_factory=BrowserModalLoginCheckConfig)
     login: BrowserModalLoginConfig = Field(default_factory=BrowserModalLoginConfig)
     add_item: BrowserModalAddItemConfig = Field(default_factory=BrowserModalAddItemConfig)
+    view_cart: BrowserModalViewCartConfig = Field(default_factory=BrowserModalViewCartConfig)
 
 
 class BrowserConfig(BaseModel):

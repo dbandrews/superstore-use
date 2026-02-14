@@ -190,8 +190,12 @@ def create_browser(
     # Select timing configuration
     if is_modal:
         # Modal: Use task_type to select timing
-        if task_type == "login":
+        if task_type == "login_check":
+            timing = config.browser.modal.login_check
+        elif task_type == "login":
             timing = config.browser.modal.login
+        elif task_type == "view_cart":
+            timing = config.browser.modal.view_cart
         elif task_type == "add_item":
             timing = config.browser.modal.add_item
         else:

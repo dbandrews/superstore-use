@@ -124,183 +124,139 @@ chat_image = (
 
 
 # =============================================================================
-# API Credential Extraction
+# Core Modal Functions
 # =============================================================================
 
-# Static API key (same for all users)
-API_KEY = "C1xujSegT5j3ap3yexJjqhOfELwGKYvz"
-API_BASE_URL = "https://api.pcexpress.ca/pcx-bff/api/v1"
+
+# Known error messages that indicate a locked/blocked account
+LOCKED_ACCOUNT_INDICATORS = [
+    "our apologies, we're having trouble connecting with the server",
+    "please try refreshing the page",
+    "contact us if the problem persists",
+    "your account has been locked",
+    "too many login attempts",
+    "suspicious activity",
+    "account is temporarily locked",
+    "unable to sign in",
+]
 
 
-async def extract_api_credentials_from_profile(profile_dir: str) -> dict:
-    """Extract API credentials from a logged-in browser profile.
+async def _fast_login_precheck(config, base_url: str) -> dict:
+    """Fast Playwright-only pre-check: navigate to site and check DOM for login state.
 
-    Opens a browser with the saved profile and captures the bearer token
-    and other credentials from network requests.
+    Uses raw Playwright (not browser-use) for maximum speed and reliability.
+    Always does a DOM check since cookie names are unreliable for auth detection.
 
-    Args:
-        profile_dir: Path to the browser profile directory
-
-    Returns:
-        dict with api_key, bearer_token, cart_id, store_id, user_id, etc.
+    Returns dict with:
+        - state: "logged_in" | "needs_login" | "locked" | "error"
+        - message: Human-readable description
     """
-    import re
-    from pathlib import Path
+    import time
 
     from playwright.async_api import async_playwright
 
-    credentials = {
-        "api_key": API_KEY,
-        "api_base_url": API_BASE_URL,
-        "cart_id": None,
-        "store_id": None,
-        "user_id": None,
-        "order_id": None,
-        "bearer_token": None,
-        "fulfillment_type": None,
-    }
+    from src.core.config import get_stealth_args
 
-    captured_data = {
-        "cart_id": None,
-        "store_id": None,
-        "order_id": None,
-        "user_id": None,
-        "bearer_token": None,
-    }
+    start_time = time.time()
 
-    profile_path = Path(profile_dir)
-    if not profile_path.exists():
-        print(f"[Credentials] Profile not found: {profile_path}")
-        return credentials
+    try:
+        async with async_playwright() as p:
+            # Build browser args matching the browser-use config
+            args = list(get_stealth_args(config))
+            args.append("--disable-extensions")
 
-    print(f"[Credentials] Extracting from profile: {profile_path}")
+            # Determine profile directory
+            profile_dir = config.browser.modal.profile_dir  # /session/profile
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_path),
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=LockProfileCookieDatabase",
-            ],
-        )
+            # Get proxy settings if available
+            proxy_server = os.environ.get("PROXY_SERVER")
+            proxy_username = os.environ.get("PROXY_USERNAME")
+            proxy_password = os.environ.get("PROXY_PASSWORD")
 
-        page = browser.pages[0] if browser.pages else await browser.new_page()
+            proxy_config = None
+            if proxy_server and proxy_username and proxy_password:
+                proxy_config = {
+                    "server": proxy_server,
+                    "username": proxy_username,
+                    "password": proxy_password,
+                }
 
-        async def handle_request(request):
-            """Capture authorization header from outgoing requests."""
-            url = request.url
-            if "api.pcexpress.ca" in url:
-                headers = request.headers
-                auth_header = headers.get("authorization", "")
-                if auth_header.lower().startswith("bearer "):
-                    token = auth_header[7:]
-                    if token and len(token) > 100:
-                        captured_data["bearer_token"] = token
-                        # Extract user_id from JWT payload
-                        try:
-                            import base64
-                            payload_b64 = token.split(".")[1]
-                            payload_b64 += "=" * (4 - len(payload_b64) % 4)
-                            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                            if "pcid" in payload:
-                                captured_data["user_id"] = payload["pcid"]
-                        except Exception:
-                            pass
+            print(f"[Login PreCheck] Launching browser with profile: {profile_dir}")
 
-        async def handle_response(response):
-            """Capture cart/store IDs from API responses."""
-            url = response.url
-            if "api.pcexpress.ca" in url:
-                cart_match = re.search(r"/carts/([a-f0-9-]{36})", url)
-                if cart_match:
-                    captured_data["cart_id"] = cart_match.group(1)
+            # Launch persistent context with the shared profile
+            launch_kwargs = {
+                "user_data_dir": profile_dir,
+                "headless": False,  # Non-headless in xvfb to avoid bot detection
+                "args": args,
+                "viewport": {"width": 1920, "height": 1080},
+                "ignore_https_errors": True,
+            }
+            if proxy_config:
+                launch_kwargs["proxy"] = proxy_config
 
-                try:
-                    if response.status == 200:
-                        body = await response.text()
-                        if '"cartId"' in body:
-                            match = re.search(r'"cartId":\s*"([a-f0-9-]{36})"', body)
-                            if match and not captured_data["cart_id"]:
-                                captured_data["cart_id"] = match.group(1)
-                        if '"storeId"' in body:
-                            match = re.search(r'"storeId":\s*"?(\d+)"?', body)
-                            if match:
-                                captured_data["store_id"] = match.group(1)
-                        if '"orderId"' in body:
-                            match = re.search(r'"orderId":\s*"([a-f0-9-]{36})"', body)
-                            if match:
-                                captured_data["order_id"] = match.group(1)
-                except Exception:
-                    pass
+            context = await p.chromium.launch_persistent_context(**launch_kwargs)
 
-        page.on("request", handle_request)
-        page.on("response", handle_response)
+            page = context.pages[0] if context.pages else await context.new_page()
 
-        print("[Credentials] Navigating to superstore to trigger API calls...")
-        await page.goto(
-            "https://www.realcanadiansuperstore.ca/",
-            wait_until="domcontentloaded",
-            timeout=60000,
-        )
+            print(f"[Login PreCheck] Navigating to {base_url}...")
+            await page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
 
-        # Wait for API calls to complete
-        await asyncio.sleep(8)
+            # Smart wait: look for auth indicators instead of fixed timeout
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const text = (document.body?.innerText || '').toLowerCase();
+                        return text.includes('sign in') || text.includes('my account');
+                    }""",
+                    timeout=10000,
+                )
+            except Exception:
+                pass  # Timeout - check whatever we have
 
-        await browser.close()
+            # Get page text content for analysis
+            body_text = await page.inner_text("body")
+            body_text_lower = body_text.lower()
 
-    # Merge captured data
-    for key in ["cart_id", "store_id", "order_id", "user_id", "bearer_token"]:
-        if captured_data.get(key):
-            credentials[key] = captured_data[key]
+            elapsed = time.time() - start_time
+            print(f"[Login PreCheck] Page checked in {elapsed:.1f}s")
 
-    # Log what we found
-    print(f"[Credentials] Extracted:")
-    print(f"  - User ID: {credentials['user_id'] or 'Not found'}")
-    print(f"  - Cart ID: {credentials['cart_id'] or 'Not found'}")
-    print(f"  - Bearer: {'Found' if credentials['bearer_token'] else 'Not found'}")
+            # Check for locked account error messages FIRST
+            for indicator in LOCKED_ACCOUNT_INDICATORS:
+                if indicator in body_text_lower:
+                    print(f"[Login PreCheck] LOCKED ACCOUNT DETECTED: '{indicator}'")
+                    await context.close()
+                    return {
+                        "state": "locked",
+                        "message": f"Account appears locked: {indicator}",
+                    }
 
-    return credentials
+            # Check if already logged in
+            has_sign_in = "sign in" in body_text_lower
+            has_my_account = "my account" in body_text_lower
 
+            if not has_sign_in or has_my_account:
+                print(f"[Login PreCheck] Already logged in! (has_sign_in={has_sign_in}, has_my_account={has_my_account}, elapsed={elapsed:.1f}s)")
+                await context.close()
+                return {
+                    "state": "logged_in",
+                    "message": f"Already logged in (checked in {elapsed:.1f}s)",
+                }
 
-def save_api_credentials(credentials: dict, output_path: str = "/session/api_credentials.json"):
-    """Save API credentials to a JSON file."""
-    from pathlib import Path
+            # Not logged in - needs the full login flow
+            print(f"[Login PreCheck] Not logged in (Sign In visible, elapsed={elapsed:.1f}s)")
+            await context.close()
+            return {
+                "state": "needs_login",
+                "message": "Sign In link found - login required",
+            }
 
-    # Don't save if we don't have a bearer token (not logged in)
-    if not credentials.get("bearer_token"):
-        print("[Credentials] No bearer token found, skipping save")
-        return False
-
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_file, "w") as f:
-        json.dump(credentials, f, indent=2)
-
-    print(f"[Credentials] Saved to {output_path}")
-    return True
-
-
-def load_api_credentials(input_path: str = "/session/api_credentials.json") -> dict | None:
-    """Load API credentials from a JSON file.
-
-    Returns:
-        dict with credentials or None if file doesn't exist
-    """
-    from pathlib import Path
-
-    input_file = Path(input_path)
-    if not input_file.exists():
-        return None
-
-    with open(input_file) as f:
-        return json.load(f)
-
-
-# =============================================================================
-# Core Modal Functions
-# =============================================================================
+    except Exception as e:
+        elapsed = time.time() - start_time
+        print(f"[Login PreCheck] Error during pre-check ({elapsed:.1f}s): {e}")
+        return {
+            "state": "error",
+            "message": f"Pre-check error: {str(e)}",
+        }
 
 
 @app.function(
@@ -325,10 +281,37 @@ def load_api_credentials(input_path: str = "/session/api_credentials.json") -> d
     memory=4096,
 )
 def login_remote_streaming():
-    """Streaming version of login that yields progress events."""
+    """Streaming version of login that yields progress events.
+
+    Flow:
+    0. Check Modal Dict cache for recent successful login → skip everything
+    1. Fast Playwright-only pre-check (no LLM) - checks DOM for login state
+    2. If already logged in → return success immediately (~5s)
+    3. If locked account detected → return failure immediately
+    4. If needs login → run full LLM agent with reduced steps
+    """
     import queue
+    import time
 
     from browser_use import Agent, ChatGroq
+
+    # === Phase 0: Check login cache in Modal Dict ===
+    LOGIN_CACHE_TTL = 1800  # 30 minutes
+    try:
+        cached = job_state_dict.get("_login_cache")
+        if cached and time.time() - cached.get("timestamp", 0) < LOGIN_CACHE_TTL:
+            elapsed = time.time() - cached["timestamp"]
+            print(f"[Login] Cache hit! Last login {elapsed:.0f}s ago, skipping check.")
+            yield json.dumps({"type": "start"})
+            yield json.dumps({
+                "type": "complete",
+                "status": "success",
+                "message": f"Login cached ({elapsed:.0f}s ago)",
+                "steps": 0,
+            })
+            return
+    except Exception as e:
+        print(f"[Login] Cache check error (non-fatal): {e}")
 
     # Start xvfb for non-headless browser in Modal
     start_xvfb()
@@ -338,78 +321,69 @@ def login_remote_streaming():
     result_holder: dict[str, str | dict | None] = {"result": None, "error": None}
 
     async def _login():
-        import base64
-        import re
-
         username = os.environ.get("SUPERSTORE_USER")
         password = os.environ.get("SUPERSTORE_PASSWORD")
 
         if not username or not password:
             return {"status": "failed", "message": "Missing credentials"}
 
-        print("[Login] Starting login process on Modal...")
-        # Use longer delays for login to handle auth server latency
-        browser = create_browser(shared_profile=True, task_type="login")
-        step_count = 0
+        overall_start = time.time()
 
-        # Captured credentials from request interception
-        captured_creds = {
-            "bearer_token": None,
-            "user_id": None,
-            "cart_id": None,
-            "store_id": None,
-            "order_id": None,
-        }
-        interceptor_setup_done = {"value": False}
+        # === Phase 1: Fast pre-check (no LLM) ===
+        print("[Login] Phase 1: Fast pre-check...")
+        step_events.put({
+            "type": "step",
+            "step": 0,
+            "thinking": "Running fast login pre-check (no LLM)...",
+            "next_goal": "Check if already logged in via DOM inspection",
+        })
 
-        def on_request(request):
-            """Capture authorization header and IDs from API requests."""
-            url = request.url
-            if "api.pcexpress.ca" in url:
-                headers = request.headers
-                auth_header = headers.get("authorization", "")
-                if auth_header.lower().startswith("bearer ") and len(auth_header) > 100:
-                    token = auth_header[7:]
-                    captured_creds["bearer_token"] = token
-                    # Extract user_id from JWT payload
-                    try:
-                        payload_b64 = token.split(".")[1]
-                        payload_b64 += "=" * (4 - len(payload_b64) % 4)
-                        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                        if "pcid" in payload:
-                            captured_creds["user_id"] = payload["pcid"]
-                    except Exception:
-                        pass
+        precheck = await _fast_login_precheck(config, config.app.base_url)
+        precheck_state = precheck["state"]
 
-                # Extract cart/store IDs from URL
-                cart_match = re.search(r"/carts/([a-f0-9-]{36})", url)
-                if cart_match:
-                    captured_creds["cart_id"] = cart_match.group(1)
-
-        async def setup_interception():
-            """Set up request interception on the browser context."""
-            if interceptor_setup_done["value"]:
-                return
+        if precheck_state == "logged_in":
+            # Already logged in! Commit session and cache the result
+            session_volume.commit()
             try:
-                pw_browser = await browser.get_playwright_browser()
-                if pw_browser:
-                    for context in pw_browser.contexts:
-                        # Listen for new pages
-                        context.on("page", lambda page: page.on("request", on_request))
-                        # Set up on existing pages
-                        for page in context.pages:
-                            page.on("request", on_request)
-                    interceptor_setup_done["value"] = True
-                    print("[Login] Request interception set up for credential capture")
-            except Exception as e:
-                print(f"[Login] Could not set up interception: {e}")
+                job_state_dict["_login_cache"] = {"timestamp": time.time()}
+            except Exception:
+                pass
+            elapsed = time.time() - overall_start
+            print(f"[Login] Already logged in! Total time: {elapsed:.1f}s")
+            return {
+                "status": "success",
+                "message": f"Already logged in (fast check: {elapsed:.1f}s)",
+                "steps": 0,
+            }
+
+        if precheck_state == "locked":
+            elapsed = time.time() - overall_start
+            print(f"[Login] Account locked detected in {elapsed:.1f}s")
+            return {
+                "status": "failed",
+                "message": f"Account locked: {precheck['message']}",
+                "steps": 0,
+            }
+
+        if precheck_state == "error":
+            print(f"[Login] Pre-check error: {precheck['message']}, falling through to agent")
+            # Fall through to the agent flow
+
+        # === Phase 2: Full LLM agent login (only when needed) ===
+        print("[Login] Phase 2: Running LLM agent for login...")
+        step_events.put({
+            "type": "step",
+            "step": 1,
+            "thinking": "Pre-check found Sign In link - need to authenticate",
+            "next_goal": "Running browser agent to complete login",
+        })
+
+        browser = create_browser(shared_profile=True, task_type="login")
+        step_count = 1  # Start at 1 since we used step 0 for pre-check
 
         async def on_step_end(agent):
             nonlocal step_count
             step_count += 1
-
-            # Ensure interception is set up (browser context created after first navigation)
-            await setup_interception()
 
             model_outputs = agent.history.model_outputs()
             latest_output = model_outputs[-1] if model_outputs else None
@@ -462,54 +436,36 @@ def login_remote_streaming():
 
             await agent.run(max_steps=config.agent.max_steps_login, on_step_end=on_step_end)
 
-            # If we didn't capture bearer token yet, navigate to main page to trigger API calls
-            if not captured_creds["bearer_token"]:
-                print("[Login] No token captured yet, navigating to trigger API calls...")
-                try:
-                    pw_browser = await browser.get_playwright_browser()
-                    if pw_browser and pw_browser.contexts:
-                        context = pw_browser.contexts[0]
-                        page = context.pages[0] if context.pages else await context.new_page()
-                        page.on("request", on_request)
-                        await page.goto(
-                            "https://www.realcanadiansuperstore.ca/",
-                            wait_until="domcontentloaded",
-                            timeout=30000,
-                        )
-                        await asyncio.sleep(3)  # Wait for API calls
-                except Exception as e:
-                    print(f"[Login] Could not trigger API calls: {e}")
+            # Check agent history for success/failure signals
+            extracted = agent.history.extracted_content()
+            model_outputs = agent.history.model_outputs()
+
+            # Check for error indicators in agent output
+            all_text = " ".join(extracted).lower() if extracted else ""
+            if model_outputs:
+                last_output = model_outputs[-1]
+                if last_output.thinking:
+                    all_text += " " + last_output.thinking.lower()
+
+            # Detect locked account from agent's observations
+            for indicator in LOCKED_ACCOUNT_INDICATORS:
+                if indicator in all_text:
+                    print(f"[Login] Agent detected locked account: '{indicator}'")
+                    return {
+                        "status": "failed",
+                        "message": f"Account locked (detected by agent): {indicator}",
+                        "steps": step_count,
+                    }
 
             session_volume.commit()
-            print("[Login] Session committed to Modal volume.")
+            try:
+                job_state_dict["_login_cache"] = {"timestamp": time.time()}
+            except Exception:
+                pass
+            elapsed = time.time() - overall_start
+            print(f"[Login] Session committed. Total time: {elapsed:.1f}s, steps: {step_count}")
 
-            # Use credentials captured during login (no new browser needed!)
-            if captured_creds["bearer_token"]:
-                credentials = {
-                    "api_key": API_KEY,
-                    "api_base_url": API_BASE_URL,
-                    "bearer_token": captured_creds["bearer_token"],
-                    "user_id": captured_creds["user_id"],
-                    "cart_id": captured_creds["cart_id"],
-                    "store_id": captured_creds["store_id"],
-                    "order_id": captured_creds["order_id"],
-                }
-                save_api_credentials(credentials, "/session/api_credentials.json")
-                session_volume.commit()
-                print("[Login] API credentials captured and saved.")
-                return {
-                    "status": "success",
-                    "message": "Login successful",
-                    "steps": step_count,
-                    "credentials": {
-                        "user_id": captured_creds["user_id"],
-                        "cart_id": captured_creds["cart_id"],
-                        "has_bearer_token": True,
-                    },
-                }
-            else:
-                print("[Login] Warning: No bearer token captured during login")
-                return {"status": "success", "message": "Login successful (no token captured)", "steps": step_count}
+            return {"status": "success", "message": f"Login successful ({elapsed:.1f}s)", "steps": step_count}
 
         except Exception as e:
             print(f"[Login] Error: {e}")
@@ -562,42 +518,6 @@ def login_remote_streaming():
                 "steps": 0,
             }
         )
-
-
-@app.function(
-    image=chat_image,  # Lightweight image, no browser needed
-    volumes={"/session": session_volume},
-    timeout=30,
-)
-def get_api_credentials() -> dict:
-    """Retrieve stored API credentials from the Modal volume.
-
-    Returns:
-        dict with api_key, bearer_token, cart_id, store_id, user_id, etc.
-        Returns default credentials (api_key only) if no saved credentials found.
-    """
-    creds = load_api_credentials("/session/api_credentials.json")
-    if creds:
-        # Don't expose full bearer token in return value for security
-        # Just indicate whether it's present
-        return {
-            "status": "found",
-            "api_key": creds.get("api_key", API_KEY),
-            "api_base_url": creds.get("api_base_url", API_BASE_URL),
-            "cart_id": creds.get("cart_id"),
-            "store_id": creds.get("store_id"),
-            "user_id": creds.get("user_id"),
-            "order_id": creds.get("order_id"),
-            "has_bearer_token": bool(creds.get("bearer_token")),
-            "bearer_token": creds.get("bearer_token"),  # Include for API use
-        }
-    else:
-        return {
-            "status": "not_found",
-            "api_key": API_KEY,
-            "api_base_url": API_BASE_URL,
-            "message": "No saved credentials. Run login first.",
-        }
 
 
 @app.function(
@@ -820,7 +740,7 @@ def view_cart_remote_streaming():
 
     async def _view_cart():
         print("[ViewCart] Starting to view cart contents...")
-        browser = create_browser(shared_profile=True, task_type="add_item")
+        browser = create_browser(shared_profile=True, task_type="view_cart")
         step_count = 0
         cart_contents = ""
 
