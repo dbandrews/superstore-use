@@ -188,7 +188,7 @@ async def _fast_login_precheck(config, base_url: str) -> dict:
                 "user_data_dir": profile_dir,
                 "headless": False,  # Non-headless in xvfb to avoid bot detection
                 "args": args,
-                "viewport": {"width": 1920, "height": 1080},
+                "viewport": {"width": 1280, "height": 720},
                 "ignore_https_errors": True,
             }
             if proxy_config:
@@ -277,8 +277,9 @@ async def _fast_login_precheck(config, base_url: str) -> dict:
         "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
-    cpu=2,
-    memory=4096,
+    cpu=4,
+    memory=8192,
+    min_containers=_config.modal_deploy.min_containers,
 )
 def login_remote_streaming():
     """Streaming version of login that yields progress events.
@@ -538,8 +539,9 @@ def login_remote_streaming():
         "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
-    cpu=2,
-    memory=4096,
+    cpu=4,
+    memory=8192,
+    min_containers=_config.modal_deploy.min_containers,
 )
 def add_item_remote_streaming(item: str, index: int):
     """Generator version that yields JSON progress events in real-time."""
@@ -722,8 +724,9 @@ def add_item_remote_streaming(item: str, index: int):
         "TIMEOUT_SwitchTabEvent": str(_config.browser.timeout_switch_tab),
         "IN_DOCKER": "True",
     },
-    cpu=2,
-    memory=4096,
+    cpu=4,
+    memory=8192,
+    min_containers=_config.modal_deploy.min_containers,
 )
 def view_cart_remote_streaming():
     """Generator version that yields JSON progress events for viewing cart contents."""
@@ -1052,6 +1055,16 @@ def flask_app():
                 job["items_processed"].append(
                     {"item": item_name, "status": event.get("status", "unknown"), "steps": event.get("steps", 0)}
                 )
+            elif event_type == "view_cart_start":
+                job["view_cart_progress"] = {"step": 0, "thinking": None, "next_goal": None}
+            elif event_type == "view_cart_step":
+                job["view_cart_progress"] = {
+                    "step": event.get("step", 0),
+                    "thinking": event.get("thinking"),
+                    "next_goal": event.get("next_goal"),
+                }
+            elif event_type == "view_cart_complete":
+                job["view_cart_progress"] = None
             elif event_type == "complete":
                 job["status"] = "completed"
                 job["success_count"] = event.get("success_count", 0)

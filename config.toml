@@ -22,6 +22,14 @@ stealth_args = [
     "--disable-features=IsolateOrigins,site-per-process",
     "--disable-accelerated-2d-canvas",
     "--disable-gpu",
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--disable-translate",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
 ]
 
 # Browser event timeouts (in seconds)
@@ -36,8 +44,8 @@ timeout_switch_tab = 30
 [browser.local]
 headless = false
 profile_dir = "./superstore-profile"
-window_width = 700
-window_height = 700
+window_width = 1920
+window_height = 1080
 use_proxy = false
 use_stealth = false
 
@@ -111,6 +119,9 @@ indicators = [
     "added to your cart",
     "quantity updated",
 ]
+
+[modal_deploy]
+min_containers = 1
 
 [local_cli]
 default_monitor_offset = 1080

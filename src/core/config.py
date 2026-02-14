@@ -39,8 +39,8 @@ class BrowserLocalConfig(BaseModel):
 
     headless: bool = False
     profile_dir: str = "./superstore-profile"
-    window_width: int = 700
-    window_height: int = 700
+    window_width: int = 1920
+    window_height: int = 1080
     use_proxy: bool = False
     use_stealth: bool = False
     timing: BrowserTimingConfig = Field(default_factory=BrowserTimingConfig)
@@ -186,6 +186,12 @@ class LocalCLIConfig(BaseModel):
     )
 
 
+class ModalDeployConfig(BaseModel):
+    """Modal deployment settings."""
+
+    min_containers: int = 0
+
+
 class Config(BaseModel):
     """Root configuration model."""
 
@@ -196,6 +202,7 @@ class Config(BaseModel):
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
     success_detection: SuccessDetectionConfig = Field(default_factory=SuccessDetectionConfig)
     local_cli: LocalCLIConfig = Field(default_factory=LocalCLIConfig)
+    modal_deploy: ModalDeployConfig = Field(default_factory=ModalDeployConfig)
 
     def load_prompt(self, name: str, **kwargs) -> str:
         """Load and format a prompt template.

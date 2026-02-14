@@ -105,6 +105,9 @@ function handleStreamEvent(event, progressDiv, itemsProcessed) {
                 updateProgressDisplay(progressDiv, itemsProcessed);
             }
             break;
+        case 'view_cart_start': loginProgress = null; itemStepProgress = {}; itemStepProgress['__view_cart__'] = { step: 0, action: 'Starting...', thinking: null, next_goal: null, label: 'Viewing cart' }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+        case 'view_cart_step': itemStepProgress['__view_cart__'] = { step: event.step || 0, action: '...', thinking: event.thinking || null, next_goal: event.next_goal || null, label: 'Viewing cart' }; updateProgressDisplay(progressDiv, itemsProcessed); break;
+        case 'view_cart_complete': delete itemStepProgress['__view_cart__']; break;
         case 'item_start': itemStepProgress[event.item] = { step: 0, action: 'Starting...', thinking: null, next_goal: null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
         case 'step': itemStepProgress[event.item] = { step: event.step || 0, action: event.action || '...', thinking: event.thinking || null, next_goal: event.next_goal || null }; updateProgressDisplay(progressDiv, itemsProcessed); break;
         case 'item_complete':
@@ -125,7 +128,7 @@ function updateProgressDisplay(progressDiv, itemsProcessed) {
     if (loginProgress) {
         let statusText = loginProgress.step > 0 ? `Step ${loginProgress.step}` : 'Starting';
         let thinkingText = loginProgress.next_goal ? loginProgress.next_goal.substring(0, 60) : (loginProgress.thinking ? loginProgress.thinking.substring(0, 60) : null);
-        html += `<div style="opacity: 0.7; margin-bottom: 8px;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span><strong>Logging in</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
+        html += `<div style="opacity: 0.7; margin-bottom: 8px;"><span class="typing-indicator inline"></span><strong>Logging in</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
         if (thinkingText) html += `<div style="margin-left: 24px; font-size: 0.75rem; opacity: 0.5; font-style: italic;">${escapeHtml(thinkingText)}${thinkingText.length >= 60 ? '...' : ''}</div>`;
         html += `</div>`;
     }
@@ -138,7 +141,8 @@ function updateProgressDisplay(progressDiv, itemsProcessed) {
     for (const [item, progress] of Object.entries(itemStepProgress)) {
         let statusText = progress.step > 0 ? `Step ${progress.step}` : 'Starting';
         let thinkingText = progress.next_goal ? progress.next_goal.substring(0, 60) : (progress.thinking ? progress.thinking.substring(0, 60) : null);
-        html += `<div style="opacity: 0.7; margin-bottom: 4px;"><span class="typing-indicator" style="display: inline-block; vertical-align: middle; margin-right: 6px; padding: 0;"><span></span><span></span><span></span></span><strong>${escapeHtml(item)}</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
+        const displayName = progress.label || item;
+        html += `<div style="opacity: 0.7; margin-bottom: 4px;"><span class="typing-indicator inline"></span><strong>${escapeHtml(displayName)}</strong> <span style="font-size: 0.7rem; opacity: 0.6;">${escapeHtml(statusText)}</span>`;
         if (thinkingText) html += `<div style="margin-left: 24px; font-size: 0.75rem; opacity: 0.5; font-style: italic;">${escapeHtml(thinkingText)}${thinkingText.length >= 60 ? '...' : ''}</div>`;
         html += `</div>`;
     }
@@ -164,7 +168,7 @@ async function sendMessage() {
     const progressDiv = document.createElement('div');
     progressDiv.className = 'message assistant';
     progressDiv.id = 'current-progress';
-    progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+    progressDiv.innerHTML = '<div class="typing-indicator"></div>';
     document.getElementById('messages').appendChild(progressDiv);
 
     // Create AbortController for this request
@@ -266,6 +270,16 @@ function displayJobState(job, progressDiv, itemsProcessed) {
     }
     // Restore items_in_progress with thinking/next_goal
     itemStepProgress = {};
+    // Restore view_cart_progress from job state
+    if (job.view_cart_progress) {
+        itemStepProgress['__view_cart__'] = {
+            step: job.view_cart_progress.step || 0,
+            action: '...',
+            thinking: job.view_cart_progress.thinking || null,
+            next_goal: job.view_cart_progress.next_goal || null,
+            label: 'Viewing cart'
+        };
+    }
     if (job.items_in_progress) {
         for (const [item, progress] of Object.entries(job.items_in_progress)) {
             itemStepProgress[item] = {
@@ -298,7 +312,7 @@ async function restoreJobStatus() {
         progressDiv = document.createElement('div');
         progressDiv.className = 'message assistant';
         progressDiv.id = 'current-progress';
-        progressDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+        progressDiv.innerHTML = '<div class="typing-indicator"></div>';
         document.getElementById('messages').appendChild(progressDiv);
     }
 
