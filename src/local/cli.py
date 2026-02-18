@@ -74,6 +74,31 @@ def copy_profile_to_temp(source_profile: Path, prefix: str = "browser-worker") -
 load_dotenv()
 
 
+def _save_profile_from_temp(browser, original_dir: str) -> None:
+    """Copy browser profile from browser-use's temp dir back to the original directory.
+
+    browser-use copies user_data_dir to a temp dir before launching Chrome.
+    Chrome writes all profile data (cookies, login state) to the temp dir.
+    This function copies it back so the profile persists for future runs.
+    """
+    temp_dir = str(browser.browser_profile.user_data_dir)
+    if temp_dir == original_dir:
+        return  # No temp dir was created
+
+    temp_path = Path(temp_dir)
+    original_path = Path(original_dir)
+
+    if not temp_path.exists():
+        print(f"Warning: temp profile {temp_dir} not found, cannot save")
+        return
+
+    # Clear original and copy temp contents back
+    if original_path.exists():
+        shutil.rmtree(original_path, ignore_errors=True)
+    shutil.copytree(temp_dir, original_dir, ignore=_ignore_chrome_lock_files, dirs_exist_ok=True)
+    print(f"Saved profile from {temp_dir} -> {original_dir}")
+
+
 # =============================================================================
 # Window Positioning (for parallel browser demo)
 # =============================================================================
@@ -212,6 +237,10 @@ async def login_and_save(headless: bool = True):
         )
 
         await agent.run(max_steps=_config.agent.max_steps_login)
+
+        # browser-use copies user_data_dir to a temp dir for Chrome to use.
+        # We need to copy the profile back so it persists for future runs.
+        _save_profile_from_temp(browser, user_data_dir)
 
         print(f"Login successful! Profile saved to {user_data_dir}")
         return {"status": "success", "message": "Login successful"}
