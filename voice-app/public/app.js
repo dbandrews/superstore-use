@@ -33,7 +33,6 @@ var state = {
   analyserData: null,
   smoothedAudioLevel: 0,
   remoteSource: null,
-  silentGain: null,
   // Orb
   currentStatus: "disconnected",
   orbColor: [0.35, 0.38, 0.5],
@@ -305,11 +304,15 @@ async function startSession() {
     state.audioCtx = audioCtx;
     state.analyser = analyser;
     state.analyserData = new Uint8Array(analyser.frequencyBinCount);
-    const silentGain = audioCtx.createGain();
-    silentGain.gain.value = 0;
-    analyser.connect(silentGain);
-    silentGain.connect(audioCtx.destination);
-    state.silentGain = silentGain;
+    const audioEl = document.createElement("audio");
+    audioEl.autoplay = true;
+    audioEl.style.display = "none";
+    document.body.appendChild(audioEl);
+    state.audioEl = audioEl;
+    const mediaSource = audioCtx.createMediaElementSource(audioEl);
+    mediaSource.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    state.remoteSource = mediaSource;
     clog("Requesting ephemeral token...");
     const tokenRes = await fetch("/token");
     if (!tokenRes.ok) throw new Error("Token request failed: " + tokenRes.status);
@@ -317,19 +320,9 @@ async function startSession() {
     const ephemeralKey = tokenData.client_secret.value;
     const pc = new RTCPeerConnection();
     state.pc = pc;
-    const audioEl = document.createElement("audio");
-    audioEl.autoplay = true;
-    state.audioEl = audioEl;
     pc.ontrack = (ev) => {
       audioEl.srcObject = ev.streams[0];
-      try {
-        const source = audioCtx.createMediaStreamSource(ev.streams[0]);
-        source.connect(analyser);
-        state.remoteSource = source;
-        clog("Remote audio connected to analyser");
-      } catch (err) {
-        clog("Failed to connect analyser: " + err.message, "error");
-      }
+      clog("Remote audio track received, routed through analyser");
     };
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     state.localStream = localStream;
@@ -386,6 +379,7 @@ function endSession() {
   state.dc = null;
   if (state.audioEl) {
     state.audioEl.srcObject = null;
+    state.audioEl.remove();
     state.audioEl = null;
   }
   if (state.remoteSource) {
@@ -394,13 +388,6 @@ function endSession() {
     } catch (_) {
     }
     state.remoteSource = null;
-  }
-  if (state.silentGain) {
-    try {
-      state.silentGain.disconnect();
-    } catch (_) {
-    }
-    state.silentGain = null;
   }
   if (state.audioCtx) {
     state.audioCtx.close().catch(() => {

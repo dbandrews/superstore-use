@@ -56,8 +56,7 @@ interface AppState {
   analyser: AnalyserNode | null;
   analyserData: Uint8Array | null;
   smoothedAudioLevel: number;
-  remoteSource: MediaStreamAudioSourceNode | null;
-  silentGain: GainNode | null;
+  remoteSource: AudioNode | null;
   // Orb
   currentStatus: string;
   orbColor: number[];
@@ -85,7 +84,6 @@ const state: AppState = {
   analyserData: null,
   smoothedAudioLevel: 0,
   remoteSource: null,
-  silentGain: null,
   // Orb
   currentStatus: "disconnected",
   orbColor: [0.35, 0.38, 0.50],
@@ -429,14 +427,24 @@ async function startSession() {
     state.analyser = analyser;
     state.analyserData = new Uint8Array(analyser.frequencyBinCount);
 
-    // Create a silent gain node (gain=0) connected to destination.
-    // This ensures the audio graph is processed by the browser even though
-    // we don't want to double-play the remote audio through Web Audio API.
-    const silentGain = audioCtx.createGain();
-    silentGain.gain.value = 0;
-    analyser.connect(silentGain);
-    silentGain.connect(audioCtx.destination);
-    state.silentGain = silentGain;
+    // Create audio element and add to DOM for cross-browser reliability.
+    // Using createMediaElementSource (instead of createMediaStreamSource)
+    // because Chrome doesn't reliably feed WebRTC remote stream data to
+    // an AnalyserNode via createMediaStreamSource — the DTLS connection
+    // isn't established when ontrack fires, so the analyser gets silence.
+    const audioEl = document.createElement("audio");
+    audioEl.autoplay = true;
+    audioEl.style.display = "none";
+    document.body.appendChild(audioEl);
+    state.audioEl = audioEl;
+
+    // Route: audioEl -> mediaElementSource -> analyser -> destination
+    // createMediaElementSource takes over the element's audio output,
+    // so we must connect through to destination for audible playback.
+    const mediaSource = audioCtx.createMediaElementSource(audioEl);
+    mediaSource.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    state.remoteSource = mediaSource;
 
     clog("Requesting ephemeral token...");
     const tokenRes = await fetch("/token");
@@ -447,24 +455,12 @@ async function startSession() {
     const pc = new RTCPeerConnection();
     state.pc = pc;
 
-    const audioEl = document.createElement("audio");
-    audioEl.autoplay = true;
-    state.audioEl = audioEl;
-
-    // When remote audio track arrives, connect it to the analyser for visualization
+    // When remote audio track arrives, attach to audio element.
+    // The MediaElementSource created above will automatically pick up
+    // the audio and route it through the analyser for visualization.
     pc.ontrack = (ev) => {
       audioEl.srcObject = ev.streams[0];
-      // Tap remote audio for visualization (doesn't affect playback)
-      try {
-        const source = audioCtx.createMediaStreamSource(ev.streams[0]);
-        source.connect(analyser);
-        // Store in state to prevent garbage collection — if GC'd, the
-        // audio graph connection is severed and the analyser gets no data.
-        state.remoteSource = source;
-        clog("Remote audio connected to analyser");
-      } catch (err: any) {
-        clog("Failed to connect analyser: " + err.message, "error");
-      }
+      clog("Remote audio track received, routed through analyser");
     };
 
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -534,16 +530,13 @@ function endSession() {
   // Release audio
   if (state.audioEl) {
     state.audioEl.srcObject = null;
+    state.audioEl.remove();
     state.audioEl = null;
   }
   // Disconnect and close audio graph
   if (state.remoteSource) {
     try { state.remoteSource.disconnect(); } catch (_) {}
     state.remoteSource = null;
-  }
-  if (state.silentGain) {
-    try { state.silentGain.disconnect(); } catch (_) {}
-    state.silentGain = null;
   }
   if (state.audioCtx) {
     state.audioCtx.close().catch(() => {});
