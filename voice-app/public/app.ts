@@ -56,8 +56,7 @@ interface AppState {
   analyser: AnalyserNode | null;
   analyserData: Uint8Array | null;
   smoothedAudioLevel: number;
-  remoteSource: MediaStreamAudioSourceNode | null;
-  silentGain: GainNode | null;
+  remoteSource: AudioNode | null;
   // Orb
   currentStatus: string;
   orbColor: number[];
@@ -85,7 +84,6 @@ const state: AppState = {
   analyserData: null,
   smoothedAudioLevel: 0,
   remoteSource: null,
-  silentGain: null,
   // Orb
   currentStatus: "disconnected",
   orbColor: [0.35, 0.38, 0.50],
@@ -429,14 +427,28 @@ async function startSession() {
     state.analyser = analyser;
     state.analyserData = new Uint8Array(analyser.frequencyBinCount);
 
-    // Create a silent gain node (gain=0) connected to destination.
-    // This ensures the audio graph is processed by the browser even though
-    // we don't want to double-play the remote audio through Web Audio API.
-    const silentGain = audioCtx.createGain();
-    silentGain.gain.value = 0;
-    analyser.connect(silentGain);
-    silentGain.connect(audioCtx.destination);
-    state.silentGain = silentGain;
+    // Create audio element for remote audio playback.
+    const audioEl = document.createElement("audio");
+    audioEl.autoplay = true;
+    audioEl.style.display = "none";
+    document.body.appendChild(audioEl);
+    state.audioEl = audioEl;
+
+    // Firefox silences an <audio> element captured by createMediaElementSource
+    // when a WebRTC srcObject is assigned (cross-origin restriction). Chrome,
+    // conversely, gives silence when using createMediaStreamSource on WebRTC
+    // streams. So we pick the strategy that works per engine.
+    const isFirefox = /Firefox/i.test(navigator.userAgent);
+
+    if (!isFirefox) {
+      // Chrome / Safari: capture audio element → analyser → destination.
+      const mediaSource = audioCtx.createMediaElementSource(audioEl);
+      mediaSource.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      state.remoteSource = mediaSource;
+    }
+    // Firefox path: audio element plays normally; createMediaStreamSource
+    // is wired up in pc.ontrack once the remote stream is available.
 
     clog("Requesting ephemeral token...");
     const tokenRes = await fetch("/token");
@@ -447,23 +459,25 @@ async function startSession() {
     const pc = new RTCPeerConnection();
     state.pc = pc;
 
-    const audioEl = document.createElement("audio");
-    audioEl.autoplay = true;
-    state.audioEl = audioEl;
-
-    // When remote audio track arrives, connect it to the analyser for visualization
+    // When remote audio track arrives, attach to audio element.
     pc.ontrack = (ev) => {
       audioEl.srcObject = ev.streams[0];
-      // Tap remote audio for visualization (doesn't affect playback)
-      try {
-        const source = audioCtx.createMediaStreamSource(ev.streams[0]);
-        source.connect(analyser);
-        // Store in state to prevent garbage collection — if GC'd, the
-        // audio graph connection is severed and the analyser gets no data.
-        state.remoteSource = source;
-        clog("Remote audio connected to analyser");
-      } catch (err: any) {
-        clog("Failed to connect analyser: " + err.message, "error");
+      // Ensure playback starts (Firefox may block autoplay if user gesture expired)
+      audioEl.play().catch(() => {});
+      clog("Remote audio track received");
+
+      // Firefox: wire the WebRTC stream directly to the analyser via
+      // createMediaStreamSource. Don't connect to destination — the
+      // <audio> element handles audible playback on its own.
+      if (isFirefox && state.audioCtx && state.analyser && !state.remoteSource) {
+        try {
+          const source = state.audioCtx.createMediaStreamSource(ev.streams[0]);
+          source.connect(state.analyser);
+          state.remoteSource = source;
+          clog("Audio analysis via createMediaStreamSource (Firefox)");
+        } catch (e: any) {
+          clog("createMediaStreamSource failed: " + e.message, "error");
+        }
       }
     };
 
@@ -534,16 +548,13 @@ function endSession() {
   // Release audio
   if (state.audioEl) {
     state.audioEl.srcObject = null;
+    state.audioEl.remove();
     state.audioEl = null;
   }
   // Disconnect and close audio graph
   if (state.remoteSource) {
     try { state.remoteSource.disconnect(); } catch (_) {}
     state.remoteSource = null;
-  }
-  if (state.silentGain) {
-    try { state.silentGain.disconnect(); } catch (_) {}
-    state.silentGain = null;
   }
   if (state.audioCtx) {
     state.audioCtx.close().catch(() => {});
