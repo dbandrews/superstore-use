@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Superstore Voice Shopping</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -45,7 +45,6 @@
       overflow-x: hidden;
     }
 
-    /* Ambient background glow */
     body::before {
       content: '';
       position: fixed;
@@ -187,7 +186,6 @@
       pointer-events: none;
     }
 
-    /* Outer decorative ring */
     .mic-ring::before {
       width: 140px;
       height: 140px;
@@ -203,7 +201,6 @@
       );
     }
 
-    /* Inner glow */
     .mic-ring::after {
       width: 120px;
       height: 120px;
@@ -254,25 +251,6 @@
       filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
     }
 
-    #start-btn.listening {
-      animation: pulse-glow 2.4s ease-in-out infinite;
-    }
-
-    @keyframes pulse-glow {
-      0%, 100% {
-        box-shadow:
-          0 4px 24px rgba(226, 62, 62, 0.3),
-          0 0 0 0 rgba(226, 62, 62, 0.3),
-          inset 0 1px 0 rgba(255, 255, 255, 0.15);
-      }
-      50% {
-        box-shadow:
-          0 4px 24px rgba(226, 62, 62, 0.3),
-          0 0 0 24px rgba(226, 62, 62, 0),
-          inset 0 1px 0 rgba(255, 255, 255, 0.15);
-      }
-    }
-
     /* ─── Status (start screen) ─── */
     #status {
       font-size: 13px;
@@ -292,23 +270,14 @@
       transition: background 0.3s, box-shadow 0.3s;
     }
 
-    #status .dot.connecting { background: var(--status-amber); box-shadow: 0 0 8px rgba(240, 160, 48, 0.4); }
-    #status .dot.listening { background: var(--status-green); box-shadow: 0 0 8px rgba(52, 208, 104, 0.4); }
-    #status .dot.thinking { background: var(--status-blue); animation: blink 1s ease-in-out infinite; box-shadow: 0 0 8px rgba(74, 142, 245, 0.4); }
-    #status .dot.speaking { background: var(--status-red); animation: blink 0.6s ease-in-out infinite; box-shadow: 0 0 8px rgba(226, 62, 62, 0.4); }
-
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.25; }
-    }
-
     /* ─── Session Section ─── */
     #session-section {
       display: none;
       flex-direction: column;
-      gap: 16px;
+      align-items: center;
+      gap: 0;
       flex: 1;
-      padding-top: 20px;
+      padding-top: 24px;
       animation: fade-up 0.4s ease-out;
     }
 
@@ -321,27 +290,65 @@
       to { opacity: 1; transform: translateY(0); }
     }
 
-    /* ─── Status Bar ─── */
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.25; }
+    }
+
+    /* ─── Orb ─── */
+    .orb-wrapper {
+      position: relative;
+      width: 220px;
+      height: 220px;
+      margin-bottom: 20px;
+      transition: transform 0.12s ease-out;
+      flex-shrink: 0;
+    }
+
+    .orb-glow {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 320px;
+      height: 320px;
+      background: radial-gradient(circle, rgba(60, 100, 255, 0.4) 0%, rgba(60, 100, 255, 0.1) 40%, transparent 70%);
+      filter: blur(40px);
+      opacity: 0.15;
+      transition: opacity 0.15s ease-out;
+      pointer-events: none;
+    }
+
+    #orb-canvas {
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      display: block;
+      position: relative;
+      z-index: 1;
+      box-shadow:
+        0 0 0 1px rgba(60, 100, 255, 0.08),
+        0 0 40px rgba(60, 100, 255, 0.12);
+    }
+
+    /* ─── Status Bar (session) ─── */
     #status-bar {
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 8px;
       font-size: 12px;
       color: var(--text-secondary);
-      padding: 10px 16px;
-      background: var(--bg-glass);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid var(--border-glass);
-      border-radius: var(--radius-md);
+      padding: 8px 16px;
+      margin-bottom: 12px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
     }
 
     #status-active {
       display: flex;
       align-items: center;
       gap: 8px;
-      font-weight: 500;
-      letter-spacing: 0.3px;
     }
 
     #status-active .dot {
@@ -357,77 +364,42 @@
     #status-active .dot.speaking { background: var(--status-red); animation: blink 0.6s ease-in-out infinite; box-shadow: 0 0 8px rgba(226, 62, 62, 0.5); }
     #status-active .dot.disconnected { background: var(--text-muted); box-shadow: none; }
 
-    /* ─── Transcript ─── */
-    #transcript {
-      flex: 1;
-      min-height: 200px;
-      max-height: 60vh;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      padding: 8px 0;
-    }
-
-    #transcript::-webkit-scrollbar { width: 3px; }
-    #transcript::-webkit-scrollbar-track { background: transparent; }
-    #transcript::-webkit-scrollbar-thumb { background: rgba(42, 60, 130, 0.3); border-radius: 3px; }
-
-    .msg {
-      padding: 12px 16px;
-      border-radius: var(--radius-md);
-      font-size: 14px;
-      line-height: 1.6;
-      max-width: 82%;
-      word-wrap: break-word;
-      animation: msg-in 0.25s ease-out;
-      position: relative;
-    }
-
-    @keyframes msg-in {
-      from { opacity: 0; transform: translateY(6px) scale(0.98); }
-      to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-
-    .msg.assistant {
-      background: var(--bg-glass);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border: 1px solid var(--border-glass);
-      align-self: flex-start;
-      color: var(--text-primary);
-    }
-
-    .msg.user {
-      background: linear-gradient(135deg, rgba(31, 59, 122, 0.35) 0%, rgba(42, 90, 174, 0.2) 100%);
-      border: 1px solid rgba(42, 90, 174, 0.25);
-      align-self: flex-end;
-      text-align: right;
-      color: #c8d4f0;
-    }
-
-    .msg.system {
-      background: rgba(20, 20, 40, 0.5);
-      border: 1px solid rgba(50, 50, 80, 0.2);
-      align-self: center;
+    /* ─── Caption ─── */
+    .caption {
       text-align: center;
-      color: var(--text-muted);
-      font-size: 12px;
-      padding: 8px 16px;
-      border-radius: 100px;
-      max-width: 90%;
-      letter-spacing: 0.2px;
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--text-primary);
+      min-height: 28px;
+      padding: 0 20px 16px;
+      max-width: 420px;
+      width: 100%;
+      opacity: 0.9;
+    }
+
+    .caption:empty {
+      min-height: 0;
+      padding-bottom: 8px;
+    }
+
+    .caption.system-caption {
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-style: italic;
     }
 
     /* ─── Cart Section ─── */
     #cart-section {
       display: none;
+      width: 100%;
+      max-width: 400px;
       background: var(--bg-glass);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
       border: 1px solid var(--border-glass);
       border-radius: var(--radius-lg);
       padding: 20px;
+      margin-bottom: 12px;
       animation: fade-up 0.3s ease-out;
     }
 
@@ -516,10 +488,106 @@
       transform: translateY(0);
     }
 
+    /* ─── Transcript Toggle ─── */
+    .transcript-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-family: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 10px 16px;
+      letter-spacing: 0.3px;
+      transition: color 0.2s;
+    }
+
+    .transcript-toggle:hover {
+      color: var(--text-secondary);
+    }
+
+    .transcript-toggle .toggle-arrow {
+      font-size: 10px;
+      transition: transform 0.2s;
+    }
+
+    .transcript-toggle.open .toggle-arrow {
+      transform: rotate(180deg);
+    }
+
+    /* ─── Transcript Panel ─── */
+    .transcript-panel {
+      display: none;
+      width: 100%;
+      max-width: 400px;
+      max-height: 300px;
+      overflow-y: auto;
+      background: var(--bg-glass);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      margin-top: 4px;
+      margin-bottom: 12px;
+    }
+
+    .transcript-panel.open {
+      display: block;
+      animation: fade-up 0.3s ease-out;
+    }
+
+    .transcript-panel::-webkit-scrollbar { width: 3px; }
+    .transcript-panel::-webkit-scrollbar-track { background: transparent; }
+    .transcript-panel::-webkit-scrollbar-thumb { background: rgba(42, 60, 130, 0.3); border-radius: 3px; }
+
+    .transcript-panel .t-msg {
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 8px;
+      word-wrap: break-word;
+      animation: msg-in 0.2s ease-out;
+    }
+
+    .transcript-panel .t-msg:last-child { margin-bottom: 0; }
+
+    @keyframes msg-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .transcript-panel .t-msg.assistant {
+      background: rgba(15, 15, 35, 0.5);
+      border: 1px solid rgba(42, 60, 130, 0.15);
+      color: var(--text-primary);
+    }
+
+    .transcript-panel .t-msg.user {
+      background: rgba(31, 59, 122, 0.2);
+      border: 1px solid rgba(42, 90, 174, 0.15);
+      color: #c8d4f0;
+      text-align: right;
+    }
+
+    .transcript-panel .t-msg.system {
+      background: transparent;
+      border: none;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 4px 0;
+    }
+
     /* ─── Stop Button ─── */
     #stop-btn {
       display: none;
-      margin-top: 4px;
+      margin-top: 8px;
       padding: 12px 20px;
       background: transparent;
       border: 1px solid rgba(60, 60, 90, 0.3);
@@ -551,20 +619,24 @@
       #start-btn svg { width: 30px; height: 30px; }
       .mic-ring::before { width: 120px; height: 120px; }
       .mic-ring::after { width: 104px; height: 104px; }
-      .msg { max-width: 88%; font-size: 13px; }
+      .orb-wrapper { width: 180px; height: 180px; }
+      #orb-canvas { width: 180px; height: 180px; }
+      .caption { font-size: 14px; }
     }
 
     @media (min-width: 768px) {
       header { padding: 18px 32px; }
       main { padding: 0 24px 40px; }
       #start-section { padding: 80px 0; }
+      .orb-wrapper { width: 260px; height: 260px; }
+      #orb-canvas { width: 260px; height: 260px; }
     }
   </style>
 </head>
 <body>
   <div class="banner">Proof of concept &mdash; voice-powered grocery shopping with PC Express</div>
   <header>
-    <div class="logo">🛒</div>
+    <div class="logo">S</div>
     <h1>Superstore Voice</h1>
     <span class="badge">Beta</span>
   </header>
@@ -589,10 +661,21 @@
     </div>
 
     <div id="session-section">
+      <!-- Orb -->
+      <div class="orb-wrapper" id="orb-wrapper">
+        <div class="orb-glow" id="orb-glow"></div>
+        <canvas id="orb-canvas"></canvas>
+      </div>
+
+      <!-- Status -->
       <div id="status-bar">
         <div id="status-active"><span class="dot listening"></span><span id="status-text-active">Listening...</span></div>
       </div>
-      <div id="transcript"></div>
+
+      <!-- Caption -->
+      <div class="caption" id="caption"></div>
+
+      <!-- Cart -->
       <div id="cart-section">
         <h3>Cart</h3>
         <ul id="cart-items"></ul>
@@ -602,6 +685,16 @@
           </a>
         </div>
       </div>
+
+      <!-- Transcript Toggle -->
+      <button class="transcript-toggle" id="transcript-toggle">
+        <span class="toggle-arrow">&#9660;</span> Show transcript
+      </button>
+
+      <!-- Transcript Panel -->
+      <div class="transcript-panel" id="transcript-panel"></div>
+
+      <!-- End Session -->
       <button id="stop-btn">End session</button>
     </div>
   </main>
