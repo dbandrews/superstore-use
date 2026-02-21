@@ -1,4 +1,15 @@
+import subprocess
+from pathlib import Path
+
 import modal
+
+# Build frontend before assembling the Modal image so that
+# add_local_dir packages the latest app.js from TypeScript source.
+_voice_dir = Path(__file__).resolve().parent
+print(f"[build] Building frontend in {_voice_dir} ...")
+subprocess.run(["npm", "ci", "--ignore-scripts"], cwd=_voice_dir, check=True)
+subprocess.run(["npm", "run", "build"], cwd=_voice_dir, check=True)
+print("[build] Frontend build complete.")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")

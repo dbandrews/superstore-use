@@ -76,8 +76,17 @@ jobs:
         with:
           version: "latest"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: uv sync
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build frontend
+        working-directory: voice-app
+        run: npm ci && npm run build
 
       - name: Deploy voice app
         env:
