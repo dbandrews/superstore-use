@@ -5,7 +5,9 @@ All settings are loaded from config.toml via the config module.
 """
 
 import os
+import platform
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 from src.core.config import get_stealth_args, is_modal_environment, load_config
@@ -85,6 +87,57 @@ def stop_xvfb() -> None:
             _xvfb_process.kill()
         _xvfb_process = None
         print("[Xvfb] Stopped virtual display")
+
+def find_playwright_chromium() -> Optional[str]:
+    """Find the Playwright-bundled Chromium binary.
+
+    This ensures local login creates profiles compatible with Modal's Playwright
+    Chromium, avoiding version mismatches with system-installed Chrome.
+
+    Search order:
+    1. PLAYWRIGHT_BROWSERS_PATH env var
+    2. Platform default cache (~/.cache/ms-playwright on Linux, ~/Library/Caches/ms-playwright on macOS)
+    3. Glob for the highest-versioned chromium binary
+
+    Returns:
+        Path to the Chromium binary, or None if not found.
+    """
+    # Determine browsers path
+    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if browsers_path:
+        base = Path(browsers_path)
+    else:
+        system = platform.system()
+        if system == "Darwin":
+            base = Path.home() / "Library" / "Caches" / "ms-playwright"
+        else:  # Linux
+            base = Path.home() / ".cache" / "ms-playwright"
+
+    if not base.exists():
+        return None
+
+    # Glob for chromium binary
+    system = platform.system()
+    if system == "Darwin":
+        pattern = "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+    else:
+        # Try chrome-linux64 first (modern Playwright), then chrome-linux (older)
+        matches = sorted(base.glob("chromium-*/chrome-linux64/chrome"))
+        if not matches:
+            matches = sorted(base.glob("chromium-*/chrome-linux/chrome"))
+        if matches:
+            path = str(matches[-1])  # Highest version
+            print(f"[Browser] Found Playwright Chromium: {path}")
+            return path
+        return None
+
+    matches = sorted(base.glob(pattern))
+    if matches:
+        path = str(matches[-1])
+        print(f"[Browser] Found Playwright Chromium: {path}")
+        return path
+    return None
+
 
 # Load config and set browser timeouts
 _config = load_config()
@@ -252,6 +305,12 @@ def create_browser(
         "args": args,
         "enable_default_extensions": enable_default_extensions,
     }
+
+    # Use Playwright Chromium locally for profile compatibility with Modal
+    if not is_modal:
+        pw_chromium = find_playwright_chromium()
+        if pw_chromium:
+            browser_kwargs["executable_path"] = pw_chromium
 
     # Add window position if specified (for tiled windows)
     if position:
