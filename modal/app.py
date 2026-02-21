@@ -145,50 +145,71 @@ async def _fast_login_precheck(config, base_url: str) -> dict:
     """Fast Playwright-only pre-check: navigate to site and check DOM for login state.
 
     Uses raw Playwright (not browser-use) for maximum speed and reliability.
-    Always does a DOM check since cookie names are unreliable for auth detection.
+    Copies the shared profile to a temp directory to avoid mutating the
+    original profile's cookies/state before the real login agent uses it.
+
+    Browser args, proxy, viewport, and headless settings are all read from
+    config to match what create_browser() produces, so the site sees a
+    consistent client fingerprint across precheck and agent.
 
     Returns dict with:
         - state: "logged_in" | "needs_login" | "locked" | "error"
         - message: Human-readable description
     """
+    import shutil
+    import tempfile
     import time
 
     from playwright.async_api import async_playwright
 
+    from src.core.browser import get_proxy_config
     from src.core.config import get_stealth_args
 
     start_time = time.time()
+    temp_dir = None
 
     try:
+        # Copy profile to a temp directory so the precheck doesn't mutate
+        # the shared profile's cookies/session state.  Chromium persistent
+        # contexts write back to the profile dir on close, which can corrupt
+        # or alter cookies before the real login agent opens the same profile.
+        modal_config = config.browser.modal
+        profile_dir = modal_config.profile_dir  # /session/profile
+        temp_dir = tempfile.mkdtemp(prefix="login_precheck_")
+        temp_profile = os.path.join(temp_dir, "profile")
+
+        if os.path.exists(profile_dir):
+            shutil.copytree(profile_dir, temp_profile, symlinks=True)
+            print("[Login PreCheck] Copied profile to temp dir for safe inspection")
+        else:
+            print(f"[Login PreCheck] No profile found at {profile_dir}, using empty temp profile")
+            os.makedirs(temp_profile, exist_ok=True)
+
         async with async_playwright() as p:
-            # Build browser args matching the browser-use config
+            # Build browser args matching create_browser() so the site sees
+            # the same client fingerprint as the real login agent
             args = list(get_stealth_args(config))
             args.append("--disable-extensions")
 
-            # Determine profile directory
-            profile_dir = config.browser.modal.profile_dir  # /session/profile
-
-            # Get proxy settings if available
-            proxy_server = os.environ.get("PROXY_SERVER")
-            proxy_username = os.environ.get("PROXY_USERNAME")
-            proxy_password = os.environ.get("PROXY_PASSWORD")
-
+            # Use proxy settings via the same helper as create_browser()
             proxy_config = None
-            if proxy_server and proxy_username and proxy_password:
-                proxy_config = {
-                    "server": proxy_server,
-                    "username": proxy_username,
-                    "password": proxy_password,
-                }
+            if modal_config.use_proxy:
+                proxy_dict = get_proxy_config()
+                if proxy_dict:
+                    proxy_config = {
+                        "server": proxy_dict["server"],
+                        "username": proxy_dict["username"],
+                        "password": proxy_dict["password"],
+                    }
 
-            print(f"[Login PreCheck] Launching browser with profile: {profile_dir}")
+            print("[Login PreCheck] Launching browser with temp profile copy")
 
-            # Launch persistent context with the shared profile
+            # Launch persistent context against the TEMP copy, not the shared profile
             launch_kwargs = {
-                "user_data_dir": profile_dir,
-                "headless": False,  # Non-headless in xvfb to avoid bot detection
+                "user_data_dir": temp_profile,
+                "headless": modal_config.headless,
                 "args": args,
-                "viewport": {"width": 1280, "height": 720},
+                "viewport": {"width": modal_config.window_width, "height": modal_config.window_height},
                 "ignore_https_errors": True,
             }
             if proxy_config:
@@ -257,6 +278,13 @@ async def _fast_login_precheck(config, base_url: str) -> dict:
             "state": "error",
             "message": f"Pre-check error: {str(e)}",
         }
+    finally:
+        # Clean up temp directory to avoid filling up disk
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                print(f"[Login PreCheck] Warning: could not clean up temp dir: {e}")
 
 
 @app.function(
