@@ -14,6 +14,7 @@ var state = {
   pc: null,
   dc: null,
   audioEl: null,
+  localStream: null,
   cart_id: null,
   store_id: null,
   currentAssistantMsg: "",
@@ -93,6 +94,7 @@ async function startSession() {
       audioEl.srcObject = ev.streams[0];
     };
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.localStream = localStream;
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
     const dc = pc.createDataChannel("oai-events");
     state.dc = dc;
@@ -133,12 +135,22 @@ async function startSession() {
   }
 }
 function endSession() {
+  // Stop all local microphone tracks to release the mic
+  if (state.localStream) {
+    state.localStream.getTracks().forEach((track) => track.stop());
+    state.localStream = null;
+  }
   if (state.pc) {
     state.pc.close();
     state.pc = null;
   }
   if (state.dc) {
     state.dc = null;
+  }
+  // Release remote audio
+  if (state.audioEl) {
+    state.audioEl.srcObject = null;
+    state.audioEl = null;
   }
   setStatus("disconnected");
   stopBtn.style.display = "none";

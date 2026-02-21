@@ -16,6 +16,7 @@ interface AppState {
   pc: RTCPeerConnection | null;
   dc: RTCDataChannel | null;
   audioEl: HTMLAudioElement | null;
+  localStream: MediaStream | null;
   cart_id: string | null;
   store_id: string | null;
   currentAssistantMsg: string;
@@ -27,6 +28,7 @@ const state: AppState = {
   pc: null,
   dc: null,
   audioEl: null,
+  localStream: null,
   cart_id: null,
   store_id: null,
   currentAssistantMsg: "",
@@ -123,6 +125,7 @@ async function startSession() {
 
     // 3. Add local audio track
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.localStream = localStream;
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
     // 4. Create data channel
@@ -177,12 +180,22 @@ async function startSession() {
 }
 
 function endSession() {
+  // Stop all local microphone tracks to release the mic
+  if (state.localStream) {
+    state.localStream.getTracks().forEach((track) => track.stop());
+    state.localStream = null;
+  }
   if (state.pc) {
     state.pc.close();
     state.pc = null;
   }
   if (state.dc) {
     state.dc = null;
+  }
+  // Release remote audio
+  if (state.audioEl) {
+    state.audioEl.srcObject = null;
+    state.audioEl = null;
   }
   setStatus("disconnected");
   stopBtn.style.display = "none";
