@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Superstore Voice Shopping</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e8;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      width: 100%;
+      padding: 20px 24px;
+      border-bottom: 1px solid #1a1a2e;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      color: #f0f0f5;
+      letter-spacing: -0.3px;
+    }
+
+    header .logo {
+      width: 28px;
+      height: 28px;
+      background: #e23e3e;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    main {
+      width: 100%;
+      max-width: 640px;
+      padding: 32px 24px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #start-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    #start-section p {
+      color: #8888a0;
+      font-size: 15px;
+      text-align: center;
+      max-width: 360px;
+      line-height: 1.5;
+    }
+
+    #start-btn {
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      border: none;
+      background: #e23e3e;
+      color: white;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s, box-shadow 0.15s;
+      box-shadow: 0 0 0 0 rgba(226, 62, 62, 0);
+    }
+
+    #start-btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 32px rgba(226, 62, 62, 0.3);
+    }
+
+    #start-btn:active { transform: scale(0.97); }
+
+    #start-btn svg { width: 36px; height: 36px; }
+
+    #start-btn.listening {
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(226, 62, 62, 0.4); }
+      50% { box-shadow: 0 0 0 20px rgba(226, 62, 62, 0); }
+    }
+
+    #status {
+      font-size: 13px;
+      color: #8888a0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 20px;
+    }
+
+    #status .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #555;
+      transition: background 0.2s;
+    }
+
+    #status .dot.connecting { background: #f0a030; }
+    #status .dot.listening { background: #40c060; }
+    #status .dot.thinking { background: #5090f0; animation: blink 1s ease-in-out infinite; }
+    #status .dot.speaking { background: #e23e3e; animation: blink 0.6s ease-in-out infinite; }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    #session-section {
+      display: none;
+      flex-direction: column;
+      gap: 20px;
+      flex: 1;
+    }
+
+    #session-section.active {
+      display: flex;
+    }
+
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #8888a0;
+    }
+
+    #status-active {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #transcript {
+      flex: 1;
+      min-height: 200px;
+      max-height: 60vh;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 4px 0;
+    }
+
+    #transcript::-webkit-scrollbar { width: 4px; }
+    #transcript::-webkit-scrollbar-track { background: transparent; }
+    #transcript::-webkit-scrollbar-thumb { background: #2a2a40; border-radius: 2px; }
+
+    .msg {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      max-width: 85%;
+      word-wrap: break-word;
+    }
+
+    .msg.assistant {
+      background: #16162a;
+      border: 1px solid #1e1e38;
+      align-self: flex-start;
+    }
+
+    .msg.user {
+      background: #1a2a1a;
+      border: 1px solid #243a24;
+      align-self: flex-end;
+      text-align: right;
+    }
+
+    .msg.system {
+      background: #1a1a2e;
+      border: 1px solid #252545;
+      align-self: center;
+      text-align: center;
+      color: #8888a0;
+      font-size: 13px;
+    }
+
+    #cart-section {
+      display: none;
+      background: #12121f;
+      border: 1px solid #1e1e38;
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    #cart-section.active { display: block; }
+
+    #cart-section h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: #b0b0c0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    #cart-items {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #cart-items li {
+      font-size: 14px;
+      color: #c0c0d0;
+      padding: 6px 0;
+      border-bottom: 1px solid #1a1a2e;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    #cart-items li:last-child { border-bottom: none; }
+
+    #cart-link {
+      display: none;
+      margin-top: 12px;
+    }
+
+    #cart-link a {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #e23e3e;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      padding: 10px 16px;
+      background: rgba(226, 62, 62, 0.08);
+      border: 1px solid rgba(226, 62, 62, 0.2);
+      border-radius: 8px;
+      transition: background 0.15s;
+    }
+
+    #cart-link a:hover {
+      background: rgba(226, 62, 62, 0.15);
+    }
+
+    #stop-btn {
+      display: none;
+      margin-top: 8px;
+      padding: 10px 20px;
+      background: transparent;
+      border: 1px solid #333;
+      color: #888;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    #stop-btn:hover { border-color: #e23e3e; color: #e23e3e; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">🛒</div>
+    <h1>Superstore Voice</h1>
+  </header>
+
+  <main>
+    <div id="start-section">
+      <button id="start-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <div id="status"><span class="dot"></span><span id="status-text">Tap to start shopping</span></div>
+      <p>Tell me what groceries you need and I'll add them to your Real Canadian Superstore cart.</p>
+    </div>
+
+    <div id="session-section">
+      <div id="status-bar">
+        <div id="status-active"><span class="dot listening"></span><span id="status-text-active">Listening...</span></div>
+      </div>
+      <div id="transcript"></div>
+      <div id="cart-section">
+        <h3>Cart</h3>
+        <ul id="cart-items"></ul>
+        <div id="cart-link">
+          <a id="cart-link-a" href="#" target="_blank" rel="noopener">
+            View cart on Superstore &rarr;
+          </a>
+        </div>
+      </div>
+      <button id="stop-btn">End session</button>
+    </div>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

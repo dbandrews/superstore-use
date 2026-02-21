@@ -1,0 +1,21 @@
+{
+  "name": "superstore-voice",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && tsx watch server.ts",
+    "build": "esbuild public/app.ts --bundle --outfile=public/app.js --format=esm --target=es2020",
+    "start": "node --loader tsx server.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.12.0",
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
