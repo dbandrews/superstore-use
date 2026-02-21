@@ -309,10 +309,13 @@ async function startSession() {
     audioEl.style.display = "none";
     document.body.appendChild(audioEl);
     state.audioEl = audioEl;
-    const mediaSource = audioCtx.createMediaElementSource(audioEl);
-    mediaSource.connect(analyser);
-    analyser.connect(audioCtx.destination);
-    state.remoteSource = mediaSource;
+    const isFirefox = /Firefox/i.test(navigator.userAgent);
+    if (!isFirefox) {
+      const mediaSource = audioCtx.createMediaElementSource(audioEl);
+      mediaSource.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      state.remoteSource = mediaSource;
+    }
     clog("Requesting ephemeral token...");
     const tokenRes = await fetch("/token");
     if (!tokenRes.ok) throw new Error("Token request failed: " + tokenRes.status);
@@ -322,7 +325,19 @@ async function startSession() {
     state.pc = pc;
     pc.ontrack = (ev) => {
       audioEl.srcObject = ev.streams[0];
-      clog("Remote audio track received, routed through analyser");
+      audioEl.play().catch(() => {
+      });
+      clog("Remote audio track received");
+      if (isFirefox && state.audioCtx && state.analyser && !state.remoteSource) {
+        try {
+          const source = state.audioCtx.createMediaStreamSource(ev.streams[0]);
+          source.connect(state.analyser);
+          state.remoteSource = source;
+          clog("Audio analysis via createMediaStreamSource (Firefox)");
+        } catch (e) {
+          clog("createMediaStreamSource failed: " + e.message, "error");
+        }
+      }
     };
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     state.localStream = localStream;

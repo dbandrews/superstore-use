@@ -427,24 +427,28 @@ async function startSession() {
     state.analyser = analyser;
     state.analyserData = new Uint8Array(analyser.frequencyBinCount);
 
-    // Create audio element and add to DOM for cross-browser reliability.
-    // Using createMediaElementSource (instead of createMediaStreamSource)
-    // because Chrome doesn't reliably feed WebRTC remote stream data to
-    // an AnalyserNode via createMediaStreamSource — the DTLS connection
-    // isn't established when ontrack fires, so the analyser gets silence.
+    // Create audio element for remote audio playback.
     const audioEl = document.createElement("audio");
     audioEl.autoplay = true;
     audioEl.style.display = "none";
     document.body.appendChild(audioEl);
     state.audioEl = audioEl;
 
-    // Route: audioEl -> mediaElementSource -> analyser -> destination
-    // createMediaElementSource takes over the element's audio output,
-    // so we must connect through to destination for audible playback.
-    const mediaSource = audioCtx.createMediaElementSource(audioEl);
-    mediaSource.connect(analyser);
-    analyser.connect(audioCtx.destination);
-    state.remoteSource = mediaSource;
+    // Firefox silences an <audio> element captured by createMediaElementSource
+    // when a WebRTC srcObject is assigned (cross-origin restriction). Chrome,
+    // conversely, gives silence when using createMediaStreamSource on WebRTC
+    // streams. So we pick the strategy that works per engine.
+    const isFirefox = /Firefox/i.test(navigator.userAgent);
+
+    if (!isFirefox) {
+      // Chrome / Safari: capture audio element → analyser → destination.
+      const mediaSource = audioCtx.createMediaElementSource(audioEl);
+      mediaSource.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      state.remoteSource = mediaSource;
+    }
+    // Firefox path: audio element plays normally; createMediaStreamSource
+    // is wired up in pc.ontrack once the remote stream is available.
 
     clog("Requesting ephemeral token...");
     const tokenRes = await fetch("/token");
@@ -456,11 +460,25 @@ async function startSession() {
     state.pc = pc;
 
     // When remote audio track arrives, attach to audio element.
-    // The MediaElementSource created above will automatically pick up
-    // the audio and route it through the analyser for visualization.
     pc.ontrack = (ev) => {
       audioEl.srcObject = ev.streams[0];
-      clog("Remote audio track received, routed through analyser");
+      // Ensure playback starts (Firefox may block autoplay if user gesture expired)
+      audioEl.play().catch(() => {});
+      clog("Remote audio track received");
+
+      // Firefox: wire the WebRTC stream directly to the analyser via
+      // createMediaStreamSource. Don't connect to destination — the
+      // <audio> element handles audible playback on its own.
+      if (isFirefox && state.audioCtx && state.analyser && !state.remoteSource) {
+        try {
+          const source = state.audioCtx.createMediaStreamSource(ev.streams[0]);
+          source.connect(state.analyser);
+          state.remoteSource = source;
+          clog("Audio analysis via createMediaStreamSource (Firefox)");
+        } catch (e: any) {
+          clog("createMediaStreamSource failed: " + e.message, "error");
+        }
+      }
     };
 
     const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
