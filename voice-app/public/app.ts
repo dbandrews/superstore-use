@@ -220,7 +220,16 @@ function handleServerEvent(event: any) {
     case "conversation.item.input_audio_transcription.completed":
       if (event.transcript) {
         clog(`User said: "${event.transcript}"`);
-        addMessage("user", event.transcript);
+        // Insert before the in-progress assistant message so ordering is correct
+        const userEl = document.createElement("div");
+        userEl.className = "msg user";
+        userEl.textContent = event.transcript;
+        if (currentMsgEl && currentMsgEl.parentNode) {
+          currentMsgEl.parentNode.insertBefore(userEl, currentMsgEl);
+        } else {
+          transcript.appendChild(userEl);
+        }
+        transcript.scrollTop = transcript.scrollHeight;
       }
       break;
 

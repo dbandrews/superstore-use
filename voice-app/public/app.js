@@ -171,7 +171,15 @@ function handleServerEvent(event) {
     case "conversation.item.input_audio_transcription.completed":
       if (event.transcript) {
         clog(`User said: "${event.transcript}"`);
-        addMessage("user", event.transcript);
+        const userEl = document.createElement("div");
+        userEl.className = "msg user";
+        userEl.textContent = event.transcript;
+        if (currentMsgEl && currentMsgEl.parentNode) {
+          currentMsgEl.parentNode.insertBefore(userEl, currentMsgEl);
+        } else {
+          transcript.appendChild(userEl);
+        }
+        transcript.scrollTop = transcript.scrollHeight;
       }
       break;
     case "response.function_call_arguments.done":

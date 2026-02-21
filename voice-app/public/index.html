@@ -4,70 +4,215 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Superstore Voice Shopping</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg-void: #060610;
+      --bg-surface: #0c0c1a;
+      --bg-elevated: #111126;
+      --bg-glass: rgba(15, 15, 35, 0.65);
+      --border-subtle: rgba(42, 60, 130, 0.25);
+      --border-glass: rgba(60, 80, 160, 0.18);
+      --brand-red: #e23e3e;
+      --brand-red-glow: rgba(226, 62, 62, 0.35);
+      --brand-blue: #1f3b7a;
+      --brand-blue-light: #2a5aae;
+      --text-primary: #e8e8f0;
+      --text-secondary: #8890b0;
+      --text-muted: #5a6080;
+      --status-amber: #f0a030;
+      --status-green: #34d068;
+      --status-blue: #4a8ef5;
+      --status-red: #e23e3e;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      background: #0a0a0f;
-      color: #e0e0e8;
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-void);
+      color: var(--text-primary);
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
+      overflow-x: hidden;
     }
 
+    /* Ambient background glow */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -40%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 800px;
+      height: 800px;
+      background: radial-gradient(
+        ellipse at center,
+        rgba(31, 59, 122, 0.12) 0%,
+        rgba(31, 59, 122, 0.04) 40%,
+        transparent 70%
+      );
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─── Banner ─── */
+    .banner {
+      width: 100%;
+      padding: 8px 24px;
+      background: linear-gradient(90deg, var(--brand-blue) 0%, var(--brand-blue-light) 100%);
+      text-align: center;
+      font-size: 12px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.85);
+      letter-spacing: 0.3px;
+      position: relative;
+      z-index: 11;
+    }
+
+    /* ─── Header ─── */
     header {
       width: 100%;
-      padding: 20px 24px;
-      border-bottom: 1px solid #1a1a2e;
+      padding: 16px 24px;
       display: flex;
       align-items: center;
-      gap: 12px;
-    }
-
-    header h1 {
-      font-size: 18px;
-      font-weight: 600;
-      color: #f0f0f5;
-      letter-spacing: -0.3px;
+      gap: 14px;
+      background: linear-gradient(180deg, rgba(15, 15, 30, 0.9) 0%, transparent 100%);
+      border-bottom: 1px solid var(--border-subtle);
+      position: relative;
+      z-index: 10;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
     }
 
     header .logo {
-      width: 28px;
-      height: 28px;
-      background: #e23e3e;
-      border-radius: 6px;
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--brand-red) 0%, #c72e2e 100%);
+      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 14px;
+      font-size: 16px;
+      box-shadow: 0 2px 12px rgba(226, 62, 62, 0.25);
+      flex-shrink: 0;
     }
 
+    header h1 {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: -0.2px;
+    }
+
+    header .badge {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--brand-blue-light);
+      background: rgba(42, 90, 174, 0.12);
+      border: 1px solid rgba(42, 90, 174, 0.2);
+      padding: 4px 10px;
+      border-radius: 100px;
+    }
+
+    /* ─── Main ─── */
     main {
       width: 100%;
-      max-width: 640px;
-      padding: 32px 24px;
+      max-width: 600px;
+      padding: 0 20px 32px;
       flex: 1;
       display: flex;
       flex-direction: column;
+      position: relative;
+      z-index: 1;
     }
 
+    /* ─── Start Section ─── */
     #start-section {
       flex: 1;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 16px;
+      gap: 28px;
+      padding: 60px 0;
+    }
+
+    #start-section .hero-text {
+      text-align: center;
+    }
+
+    #start-section .hero-text h2 {
+      font-family: 'Instrument Serif', Georgia, serif;
+      font-size: 28px;
+      font-weight: 400;
+      color: var(--text-primary);
+      margin-bottom: 10px;
+      letter-spacing: -0.3px;
     }
 
     #start-section p {
-      color: #8888a0;
-      font-size: 15px;
+      color: var(--text-secondary);
+      font-size: 14px;
       text-align: center;
-      max-width: 360px;
-      line-height: 1.5;
+      max-width: 320px;
+      line-height: 1.65;
+      margin: 0 auto;
+    }
+
+    /* ─── Mic Button ─── */
+    .mic-ring {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .mic-ring::before,
+    .mic-ring::after {
+      content: '';
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    /* Outer decorative ring */
+    .mic-ring::before {
+      width: 140px;
+      height: 140px;
+      border: 1px solid rgba(226, 62, 62, 0.12);
+      animation: ring-rotate 12s linear infinite;
+      background: conic-gradient(
+        from 0deg,
+        transparent 0%,
+        rgba(226, 62, 62, 0.08) 25%,
+        transparent 50%,
+        rgba(226, 62, 62, 0.08) 75%,
+        transparent 100%
+      );
+    }
+
+    /* Inner glow */
+    .mic-ring::after {
+      width: 120px;
+      height: 120px;
+      background: radial-gradient(circle, rgba(226, 62, 62, 0.08) 0%, transparent 70%);
+    }
+
+    @keyframes ring-rotate {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }
 
     #start-btn {
@@ -75,86 +220,144 @@
       height: 96px;
       border-radius: 50%;
       border: none;
-      background: #e23e3e;
+      background: linear-gradient(145deg, #e84444 0%, #c22e2e 100%);
       color: white;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: transform 0.15s, box-shadow 0.15s;
-      box-shadow: 0 0 0 0 rgba(226, 62, 62, 0);
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s;
+      box-shadow:
+        0 4px 24px rgba(226, 62, 62, 0.3),
+        0 0 0 0 rgba(226, 62, 62, 0),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      position: relative;
+      z-index: 2;
     }
 
     #start-btn:hover {
-      transform: scale(1.05);
-      box-shadow: 0 0 32px rgba(226, 62, 62, 0.3);
+      transform: scale(1.08);
+      box-shadow:
+        0 8px 40px rgba(226, 62, 62, 0.4),
+        0 0 60px rgba(226, 62, 62, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15);
     }
 
-    #start-btn:active { transform: scale(0.97); }
+    #start-btn:active {
+      transform: scale(0.95);
+      transition-duration: 0.08s;
+    }
 
-    #start-btn svg { width: 36px; height: 36px; }
+    #start-btn svg {
+      width: 34px;
+      height: 34px;
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+    }
 
     #start-btn.listening {
-      animation: pulse 2s ease-in-out infinite;
+      animation: pulse-glow 2.4s ease-in-out infinite;
     }
 
-    @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(226, 62, 62, 0.4); }
-      50% { box-shadow: 0 0 0 20px rgba(226, 62, 62, 0); }
+    @keyframes pulse-glow {
+      0%, 100% {
+        box-shadow:
+          0 4px 24px rgba(226, 62, 62, 0.3),
+          0 0 0 0 rgba(226, 62, 62, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      }
+      50% {
+        box-shadow:
+          0 4px 24px rgba(226, 62, 62, 0.3),
+          0 0 0 24px rgba(226, 62, 62, 0),
+          inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      }
     }
 
+    /* ─── Status (start screen) ─── */
     #status {
       font-size: 13px;
-      color: #8888a0;
+      color: var(--text-muted);
       display: flex;
       align-items: center;
       gap: 8px;
       min-height: 20px;
+      font-weight: 500;
     }
 
     #status .dot {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
-      background: #555;
-      transition: background 0.2s;
+      background: var(--text-muted);
+      transition: background 0.3s, box-shadow 0.3s;
     }
 
-    #status .dot.connecting { background: #f0a030; }
-    #status .dot.listening { background: #40c060; }
-    #status .dot.thinking { background: #5090f0; animation: blink 1s ease-in-out infinite; }
-    #status .dot.speaking { background: #e23e3e; animation: blink 0.6s ease-in-out infinite; }
+    #status .dot.connecting { background: var(--status-amber); box-shadow: 0 0 8px rgba(240, 160, 48, 0.4); }
+    #status .dot.listening { background: var(--status-green); box-shadow: 0 0 8px rgba(52, 208, 104, 0.4); }
+    #status .dot.thinking { background: var(--status-blue); animation: blink 1s ease-in-out infinite; box-shadow: 0 0 8px rgba(74, 142, 245, 0.4); }
+    #status .dot.speaking { background: var(--status-red); animation: blink 0.6s ease-in-out infinite; box-shadow: 0 0 8px rgba(226, 62, 62, 0.4); }
 
     @keyframes blink {
       0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+      50% { opacity: 0.25; }
     }
 
+    /* ─── Session Section ─── */
     #session-section {
       display: none;
       flex-direction: column;
-      gap: 20px;
+      gap: 16px;
       flex: 1;
+      padding-top: 20px;
+      animation: fade-up 0.4s ease-out;
     }
 
     #session-section.active {
       display: flex;
     }
 
+    @keyframes fade-up {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ─── Status Bar ─── */
     #status-bar {
       display: flex;
       align-items: center;
       gap: 8px;
-      font-size: 13px;
-      color: #8888a0;
+      font-size: 12px;
+      color: var(--text-secondary);
+      padding: 10px 16px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
     }
 
     #status-active {
       display: flex;
       align-items: center;
       gap: 8px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
     }
 
+    #status-active .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+
+    #status-active .dot.connecting { background: var(--status-amber); box-shadow: 0 0 8px rgba(240, 160, 48, 0.5); }
+    #status-active .dot.listening { background: var(--status-green); box-shadow: 0 0 8px rgba(52, 208, 104, 0.5); }
+    #status-active .dot.thinking { background: var(--status-blue); animation: blink 1s ease-in-out infinite; box-shadow: 0 0 8px rgba(74, 142, 245, 0.5); }
+    #status-active .dot.speaking { background: var(--status-red); animation: blink 0.6s ease-in-out infinite; box-shadow: 0 0 8px rgba(226, 62, 62, 0.5); }
+    #status-active .dot.disconnected { background: var(--text-muted); box-shadow: none; }
+
+    /* ─── Transcript ─── */
     #transcript {
       flex: 1;
       min-height: 200px;
@@ -162,138 +365,225 @@
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      padding: 4px 0;
+      gap: 10px;
+      padding: 8px 0;
     }
 
-    #transcript::-webkit-scrollbar { width: 4px; }
+    #transcript::-webkit-scrollbar { width: 3px; }
     #transcript::-webkit-scrollbar-track { background: transparent; }
-    #transcript::-webkit-scrollbar-thumb { background: #2a2a40; border-radius: 2px; }
+    #transcript::-webkit-scrollbar-thumb { background: rgba(42, 60, 130, 0.3); border-radius: 3px; }
 
     .msg {
-      padding: 10px 14px;
-      border-radius: 12px;
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
       font-size: 14px;
-      line-height: 1.5;
-      max-width: 85%;
+      line-height: 1.6;
+      max-width: 82%;
       word-wrap: break-word;
+      animation: msg-in 0.25s ease-out;
+      position: relative;
+    }
+
+    @keyframes msg-in {
+      from { opacity: 0; transform: translateY(6px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
     }
 
     .msg.assistant {
-      background: #16162a;
-      border: 1px solid #1e1e38;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--border-glass);
       align-self: flex-start;
+      color: var(--text-primary);
     }
 
     .msg.user {
-      background: #1a2a1a;
-      border: 1px solid #243a24;
+      background: linear-gradient(135deg, rgba(31, 59, 122, 0.35) 0%, rgba(42, 90, 174, 0.2) 100%);
+      border: 1px solid rgba(42, 90, 174, 0.25);
       align-self: flex-end;
       text-align: right;
+      color: #c8d4f0;
     }
 
     .msg.system {
-      background: #1a1a2e;
-      border: 1px solid #252545;
+      background: rgba(20, 20, 40, 0.5);
+      border: 1px solid rgba(50, 50, 80, 0.2);
       align-self: center;
       text-align: center;
-      color: #8888a0;
-      font-size: 13px;
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 8px 16px;
+      border-radius: 100px;
+      max-width: 90%;
+      letter-spacing: 0.2px;
     }
 
+    /* ─── Cart Section ─── */
     #cart-section {
       display: none;
-      background: #12121f;
-      border: 1px solid #1e1e38;
-      border-radius: 12px;
-      padding: 16px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      animation: fade-up 0.3s ease-out;
     }
 
     #cart-section.active { display: block; }
 
     #cart-section h3 {
-      font-size: 14px;
+      font-size: 11px;
       font-weight: 600;
-      margin-bottom: 10px;
-      color: #b0b0c0;
+      margin-bottom: 14px;
+      color: var(--text-muted);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 1.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #cart-section h3::before {
+      content: '';
+      display: block;
+      width: 3px;
+      height: 12px;
+      background: var(--brand-red);
+      border-radius: 2px;
     }
 
     #cart-items {
       list-style: none;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 0;
     }
 
     #cart-items li {
       font-size: 14px;
-      color: #c0c0d0;
-      padding: 6px 0;
-      border-bottom: 1px solid #1a1a2e;
+      color: var(--text-primary);
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(42, 60, 130, 0.12);
       display: flex;
       justify-content: space-between;
+      align-items: center;
     }
 
     #cart-items li:last-child { border-bottom: none; }
 
+    #cart-items li span:last-child {
+      color: var(--text-secondary) !important;
+      font-size: 13px;
+      font-weight: 500;
+      background: rgba(42, 60, 130, 0.12);
+      padding: 2px 10px;
+      border-radius: 100px;
+    }
+
+    /* ─── Cart Link ─── */
     #cart-link {
       display: none;
-      margin-top: 12px;
+      margin-top: 16px;
     }
 
     #cart-link a {
-      display: inline-flex;
+      display: flex;
       align-items: center;
-      gap: 6px;
-      color: #e23e3e;
+      justify-content: center;
+      gap: 8px;
+      color: white;
       text-decoration: none;
       font-size: 14px;
-      font-weight: 500;
-      padding: 10px 16px;
-      background: rgba(226, 62, 62, 0.08);
-      border: 1px solid rgba(226, 62, 62, 0.2);
-      border-radius: 8px;
-      transition: background 0.15s;
+      font-weight: 600;
+      padding: 14px 20px;
+      background: linear-gradient(135deg, var(--brand-red) 0%, #c72e2e 100%);
+      border: none;
+      border-radius: var(--radius-md);
+      transition: transform 0.15s, box-shadow 0.2s;
+      box-shadow: 0 4px 20px rgba(226, 62, 62, 0.3);
+      letter-spacing: 0.2px;
+      width: 100%;
     }
 
     #cart-link a:hover {
-      background: rgba(226, 62, 62, 0.15);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 28px rgba(226, 62, 62, 0.4);
     }
 
+    #cart-link a:active {
+      transform: translateY(0);
+    }
+
+    /* ─── Stop Button ─── */
     #stop-btn {
       display: none;
-      margin-top: 8px;
-      padding: 10px 20px;
+      margin-top: 4px;
+      padding: 12px 20px;
       background: transparent;
-      border: 1px solid #333;
-      color: #888;
-      border-radius: 8px;
+      border: 1px solid rgba(60, 60, 90, 0.3);
+      color: var(--text-secondary);
+      border-radius: var(--radius-md);
       cursor: pointer;
       font-size: 13px;
-      transition: border-color 0.15s, color 0.15s;
+      font-weight: 500;
+      font-family: inherit;
+      transition: all 0.2s;
+      letter-spacing: 0.3px;
     }
 
-    #stop-btn:hover { border-color: #e23e3e; color: #e23e3e; }
+    #stop-btn:hover {
+      border-color: rgba(226, 62, 62, 0.4);
+      color: var(--brand-red);
+      background: rgba(226, 62, 62, 0.05);
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 480px) {
+      header { padding: 14px 16px; }
+      header h1 { font-size: 15px; }
+      header .badge { display: none; }
+      main { padding: 0 16px 24px; }
+      #start-section { padding: 40px 0; gap: 24px; }
+      #start-section .hero-text h2 { font-size: 24px; }
+      #start-btn { width: 84px; height: 84px; }
+      #start-btn svg { width: 30px; height: 30px; }
+      .mic-ring::before { width: 120px; height: 120px; }
+      .mic-ring::after { width: 104px; height: 104px; }
+      .msg { max-width: 88%; font-size: 13px; }
+    }
+
+    @media (min-width: 768px) {
+      header { padding: 18px 32px; }
+      main { padding: 0 24px 40px; }
+      #start-section { padding: 80px 0; }
+    }
   </style>
 </head>
 <body>
+  <div class="banner">Proof of concept &mdash; voice-powered grocery shopping with PC Express</div>
   <header>
     <div class="logo">🛒</div>
     <h1>Superstore Voice</h1>
+    <span class="badge">Beta</span>
   </header>
 
   <main>
     <div id="start-section">
-      <button id="start-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-          <line x1="12" y1="19" x2="12" y2="23"/>
-          <line x1="8" y1="23" x2="16" y2="23"/>
-        </svg>
-      </button>
+      <div class="hero-text">
+        <h2>Voice&ndash;powered grocery shopping</h2>
+      </div>
+      <div class="mic-ring">
+        <button id="start-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </button>
+      </div>
       <div id="status"><span class="dot"></span><span id="status-text">Tap to start shopping</span></div>
       <p>Tell me what groceries you need and I'll add them to your Real Canadian Superstore cart.</p>
     </div>
