@@ -81,3 +81,28 @@ uv run modal deploy modal/app.py      # Deploy
 uv run modal serve modal/app.py       # Dev with hot-reload
 uv run modal app logs superstore-agent  # Stream logs
 ```
+
+## Voice App
+
+WebRTC voice shopping UI using OpenAI Realtime API with an iridescent WebGL orb.
+
+### Key files
+
+| What | File |
+|------|------|
+| All frontend logic (orb, audio, WebRTC) | `voice-app/public/app.ts` |
+| Markup + CSS | `voice-app/public/index.html` |
+| Backend (FastAPI on Modal) | `voice-app/modal_app.py` |
+
+### Audio → Orb pipeline
+
+1. `startSession` creates `AudioContext` + `AnalyserNode` (fftSize=1024)
+2. `pc.ontrack` connects remote audio stream to analyser via `createMediaStreamSource`
+3. `renderOrbFrame` reads `getByteFrequencyData`, normalizes to 0-1, smooths, and drives shader uniforms (`uAmplitude`, `uSpeed`) + CSS (`scale`, `glowOpacity`)
+
+### Build & deploy
+
+```bash
+cd voice-app && npm run build          # compile app.ts → app.js
+uv run modal deploy voice-app/modal_app.py
+```
