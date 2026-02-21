@@ -107,6 +107,7 @@ TOOLS = [
 def create_web_app():
     import math
     import os
+    import re
     from urllib.parse import quote
 
     import httpx
@@ -144,21 +145,51 @@ def create_web_app():
     async def find_stores(request: Request):
         body = await request.json()
         query = body.get("location") or body.get("postal_code") or ""
+        print(f'[find-stores] Received query: "{query}"')
+
+        def normalize_address(addr: str) -> str:
+            """Shorten verbose directionals for better Nominatim matching."""
+            replacements = {
+                r"\bNorthwest\b": "NW",
+                r"\bNortheast\b": "NE",
+                r"\bSouthwest\b": "SW",
+                r"\bSoutheast\b": "SE",
+            }
+            for pattern, abbr in replacements.items():
+                addr = re.sub(pattern, abbr, addr, flags=re.IGNORECASE)
+            return addr
+
+        async def geocode(q: str, client: httpx.AsyncClient):
+            url = f"https://nominatim.openstreetmap.org/search?q={quote(q)}&countrycodes=ca&format=json&limit=1"
+            print(f'[find-stores] Nominatim request: "{q}" url={url}')
+            resp = await client.get(url, headers={"User-Agent": "superstore-voice-app"})
+            print(f"[find-stores] Nominatim HTTP {resp.status_code}, body length={len(resp.text)}")
+            if resp.status_code != 200:
+                print(f"[find-stores] Nominatim error response: {resp.text[:500]}")
+                return None
+            data = resp.json()
+            if not data:
+                print(f'[find-stores] Nominatim returned empty results for "{q}"')
+                return None
+            hit = data[0]
+            print(f'[find-stores] Geocoded "{q}" -> {hit["lat"]}, {hit["lon"]} ({hit.get("display_name", "")})')
+            return hit
 
         async with httpx.AsyncClient() as client:
-            geo_resp = await client.get(
-                f"https://nominatim.openstreetmap.org/search?q={quote(query)},+Canada&format=json&limit=1",
-                headers={"User-Agent": "superstore-voice-app"},
-            )
-            geo_data = geo_resp.json()
-            if not geo_data:
+            geo_hit = await geocode(query, client)
+            if not geo_hit:
+                normalized = normalize_address(query)
+                if normalized != query:
+                    print(f'[find-stores] Retrying with normalized address: "{normalized}"')
+                    geo_hit = await geocode(normalized, client)
+            if not geo_hit:
+                print(f'[find-stores] FAILED to geocode "{query}"')
                 return JSONResponse(
                     status_code=400,
                     content={"error": f'Could not find location: "{query}"'},
                 )
-            lat = float(geo_data[0]["lat"])
-            lng = float(geo_data[0]["lon"])
-            print(f'[find-stores] Geocoded "{query}" -> {lat}, {lng}')
+            lat = float(geo_hit["lat"])
+            lng = float(geo_hit["lon"])
 
             loc_resp = await client.get(
                 f"{PCX_BASE}/pickup-locations?bannerIds=superstore",
