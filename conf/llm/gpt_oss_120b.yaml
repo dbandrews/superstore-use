@@ -1,0 +1,4 @@
+model: openai/gpt-oss-120b
+provider: groq
+temperature: 0.0
+use_vision: false

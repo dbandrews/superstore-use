@@ -1,0 +1,8 @@
+# Qwen: Qwen3 30B A3B Instruct 2507
+# $0.0800/M input, $0.3300/M output, 262,144 context
+model: qwen/qwen3-30b-a3b-instruct-2507
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

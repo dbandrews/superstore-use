@@ -1,0 +1,38 @@
+defaults:
+  - llm: gpt4o
+  - browser: headless
+  - prompt: default
+  - judge: default
+  - _self_
+
+name: eval
+items:
+  # Easy - basic items with quantities
+  - 1 bunch of bananas
+  - silk oat milk unsweetened
+  - 2 lb bag of carrots
+  - 2 cans of Campbell's tomato soup
+  - 10 lb bag of russet potatoes
+  - Kellogg's Frosted Flakes cereal
+  - 4 Honeycrisp apples
+  - French's yellow mustard
+  - boneless skinless chicken breasts 2 lbs
+  - Smartwater 1L bottle
+
+base_url: https://www.realcanadiansuperstore.ca/en
+cart_url: https://www.realcanadiansuperstore.ca/en/cartReview
+output_dir: ./eval_results
+
+max_steps: 15
+timeout_seconds: 300.0
+
+# Retry configuration for handling transient CDP/browser errors
+max_retries: 2  # Number of retry attempts per item (0 = no retries)
+retry_delay: 3.0  # Seconds to wait between retries
+
+# Runtime options (not part of EvalConfig, used by CLI)
+dry_run: false
+# Whether to remove temporary browser profiles after evaluation
+# Set to false (default) to keep profiles for inspection
+# Set to true to clean up temp profiles
+cleanup_profile: false

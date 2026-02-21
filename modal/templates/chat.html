@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Superstore Shopping Assistant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}">
+</head>
+<body>
+    <div class="header"><h1>superstore-use</h1></div>
+    <div class="main-container">
+        <div class="chat-container">
+            <div class="messages" id="messages">
+                <div class="message assistant">What would you like to cook or buy?</div>
+            </div>
+            <div class="suggestions" id="suggestions">
+                <span class="suggestion" onclick="sendSuggestion(this)">pasta carbonara</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">milk, eggs, bread</span>
+                <span class="suggestion" onclick="sendSuggestion(this)">banana pancakes</span>
+            </div>
+            <div class="input-area">
+                <input type="text" id="message-input" placeholder="Message..." onkeypress="handleKeyPress(event)">
+                <button id="send-btn" onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header" onclick="toggleSidebar()">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <h2>Grocery List</h2>
+                    <span class="sidebar-toggle-icon" id="toggle-icon">&#9650;</span>
+                </div>
+                <span class="item-count" id="item-count">0</span>
+            </div>
+            <div class="grocery-list" id="grocery-list">
+                <div class="empty-list" id="empty-list"><div class="icon">—</div><p>No items yet</p></div>
+            </div>
+            <div class="sidebar-footer">
+                <div class="add-item-form">
+                    <input type="text" id="manual-item-input" placeholder="Add item..." onkeypress="handleManualItemKeyPress(event)">
+                    <button onclick="addManualItem()">+</button>
+                </div>
+                <div class="sidebar-actions">
+                    <button class="clear-btn" onclick="clearList()">Clear</button>
+                    <button class="add-all-btn" id="add-all-btn" onclick="addAllToCart()" disabled>Add to Cart</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+</body>
+</html>

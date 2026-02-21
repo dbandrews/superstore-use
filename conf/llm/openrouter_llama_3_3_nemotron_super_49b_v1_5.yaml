@@ -1,0 +1,8 @@
+# NVIDIA: Llama 3.3 Nemotron Super 49B V1.5
+# $0.1000/M input, $0.4000/M output, 131,072 context
+model: nvidia/llama-3.3-nemotron-super-49b-v1.5
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

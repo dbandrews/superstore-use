@@ -1,85 +1,83 @@
-# AGENTS.md - LLM Guide
-
 ## Project Overview
 
-This is an AI-powered grocery shopping agent for **Real Canadian Superstore**. It uses the `browser-use` library to automate browser interactions with GPT-4.1, enabling automated grocery ordering.
+AI-powered grocery shopping agent for **Real Canadian Superstore** using `browser-use` for browser automation.
 
 ## Architecture
 
-### Entry Points
+```
+src/
+├── core/           # Shared utilities (browser.py, config.py, success.py, agent.py)
+├── local/cli.py    # Local CLI: uv run -m src.local.cli
+├── eval/           # Evaluation harness: uv run -m src.eval.cli
+└── prompts/        # Prompt templates (login.md, add_item.md, checkout.md)
+conf/               # Hydra configs (llm/, browser/, prompt/, judge/, experiment/)
+modal/app.py        # Modal deployment
+```
 
-| File | Purpose | Run Command |
-|------|---------|-------------|
-| `main.py` | CLI - Interactive terminal shopping | `uv run main.py` |
-| `app.py` | Local Flask web UI | `uv run app.py` |
-| `modal_app.py` | Cloud deployment on Modal | `modal deploy modal_app.py` |
-| `login.py` | One-time login to save session | `uv run login.py` |
+## Entry Points
 
-### Core Flow
+| Command | Purpose |
+|---------|---------|
+| `uv run -m src.local.cli login` | Save browser profile |
+| `uv run -m src.local.cli shop` | Local shopping |
+| `uv run -m src.eval.cli` | Run evaluation harness |
+| `uv run modal deploy modal/app.py` | Deploy to Modal |
 
-1. **Login** - Run `login.py` first to authenticate and save browser profile
-2. **Add Items** - Agent searches for items and adds them to cart (parallel processing supported)
-3. **Checkout** - Agent navigates through checkout steps, stops at final confirmation
-4. **Place Order** - Requires explicit user confirmation before submitting
+## Quick Start
 
-### Key Directories
+ALWAYS use `uv` to run python scripts.
 
-- `./superstore-profile/` - Persisted browser state (cookies, login session)
-- `./templates/` - Flask HTML templates (local app only)
-- `./agent_docs/` - Documentation for Modal deployment
+```bash
+# Setup
+uv sync && uvx playwright install chromium --with-deps --no-shell
 
-## Tech Stack
+# Login and shop locally
+uv run -m src.local.cli login
+uv run -m src.local.cli shop
 
-- **Python 3.11** with `uv` package manager
-- **browser-use** - AI browser automation framework
-- **OpenAI GPT-4.1** - LLM for agent decision-making
-- **Flask** - Web interface
-- **Modal** - Serverless cloud deployment
-- **Playwright** - Browser automation backend
+# Run eval
+uv run -m src.eval.cli llm=llama_70b 'items=[bread,milk]'
+```
 
 ## Environment Variables
 
-Required in `.env`:
-```
-OPENAI_API_KEY=...
-SUPERSTORE_USER=...
-SUPERSTORE_PASSWORD=...
-```
+See `.env.example` or set:
+- `GROQ_API_KEY` - Required for Groq models
+- `OPENROUTER_API_KEY` - Required for OpenRouter models
+- `SUPERSTORE_USER`, `SUPERSTORE_PASSWORD` - For login
 
-For Modal (proxy support):
-```
-PROXY_SERVER=...
-PROXY_USERNAME=...
-PROXY_PASSWORD=...
-```
+## Key Files
 
-## Development Notes
+| Area | Files |
+|------|-------|
+| Browser setup | [src/core/browser.py](src/core/browser.py) |
+| Eval harness | [src/eval/harness.py](src/eval/harness.py), [src/eval/config.py](src/eval/config.py) |
+| Cart verification | [src/eval/cart_checker.py](src/eval/cart_checker.py) |
+| Hydra config | [conf/config.yaml](conf/config.yaml) |
+| LLM configs | [conf/llm/](conf/llm/) - see `uv run -m src.eval.cli list-models` |
+| Judge configs | [conf/judge/](conf/judge/) |
+| Modal docs | [agent_docs/modal.md](agent_docs/modal.md) |
+| Prompts | [src/prompts/](src/prompts/) |
 
-- Browser runs in headed mode locally (`headless=False`) for debugging
-- Browser runs headless in Modal (`headless=True`)
-- Parallel item adding uses `multiprocessing.Pool` with max 4 workers
-- Each worker copies the base profile to preserve login state
-- Always confirm order placement with user before final submission
+## Evaluation CLI
 
-## Common Tasks
-
-**Setup:**
 ```bash
-uv sync
-uvx playwright install chromium --with-deps --no-shell
+uv run -m src.eval.cli                           # Default config
+uv run -m src.eval.cli llm=llama_70b             # Override LLM
+uv run -m src.eval.cli browser=headed            # Visible browser
+uv run -m src.eval.cli --multirun llm=gpt41,llama_70b  # Compare models (sequential)
+uv run -m src.eval.cli --multirun hydra/launcher=joblib llm=gpt41,llama_70b  # Compare models (parallel)
+uv run -m src.eval.cli list-models               # Available LLMs
+uv run -m src.eval.cli list-runs                 # Recent runs
+uv run -m src.eval.cli --help                    # Full options
 ```
 
-**First-time login:**
-```bash
-uv run login.py
-```
+## Modal Deployment
 
-**Run locally (CLI):**
-```bash
-uv run main.py
-```
+See [agent_docs/modal.md](agent_docs/modal.md) for detailed guidelines.
 
-**Run locally (Web UI):**
 ```bash
-uv run app.py  # Access at http://localhost:5000
+uv run modal deploy modal/app.py      # Deploy
+uv run modal serve modal/app.py       # Dev with hot-reload
+uv run modal app logs superstore-agent  # Stream logs
 ```

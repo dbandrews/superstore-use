@@ -1,0 +1,545 @@
+"""Evaluation result models.
+
+Defines data structures for storing and serializing evaluation outcomes,
+including timing metrics, cart contents, and success indicators.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class TokenUsage(BaseModel):
+    """Token usage tracking for LLM calls.
+
+    Mirrors the browser-use UsageSummary structure for comprehensive tracking
+    including cached tokens, costs, and per-model breakdowns.
+    """
+
+    # Token counts
+    input_tokens: int = Field(default=0, description="Total input/prompt tokens consumed")
+    output_tokens: int = Field(default=0, description="Total output/completion tokens generated")
+    cached_tokens: int = Field(default=0, description="Cached input tokens (reduced cost)")
+
+    # Cost breakdown
+    input_cost: float = Field(default=0.0, description="Cost for input tokens in USD")
+    output_cost: float = Field(default=0.0, description="Cost for output tokens in USD")
+    cached_cost: float = Field(default=0.0, description="Cost for cached tokens in USD")
+    total_cost: float = Field(default=0.0, description="Total cost in USD")
+
+    # Metadata
+    entry_count: int = Field(default=0, description="Number of LLM calls")
+    by_model: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Token usage breakdown by model",
+    )
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens (input + output)."""
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def non_cached_input_tokens(self) -> int:
+        """Input tokens that were not cached (full price)."""
+        return self.input_tokens - self.cached_tokens
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        """Add two TokenUsage instances together."""
+        # Merge by_model dicts
+        merged_by_model = dict(self.by_model)
+        for model, usage in other.by_model.items():
+            if model in merged_by_model:
+                # Sum the values for existing models
+                existing = merged_by_model[model]
+                merged_by_model[model] = {
+                    k: existing.get(k, 0) + usage.get(k, 0)
+                    for k in set(existing.keys()) | set(usage.keys())
+                }
+            else:
+                merged_by_model[model] = usage
+
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
+            input_cost=self.input_cost + other.input_cost,
+            output_cost=self.output_cost + other.output_cost,
+            cached_cost=self.cached_cost + other.cached_cost,
+            total_cost=self.total_cost + other.total_cost,
+            entry_count=self.entry_count + other.entry_count,
+            by_model=merged_by_model,
+        )
+
+    @classmethod
+    def from_usage_summary(cls, usage) -> "TokenUsage":
+        """Create TokenUsage from browser-use UsageSummary.
+
+        Args:
+            usage: browser-use UsageSummary object
+
+        Returns:
+            TokenUsage instance with all available data
+        """
+        if usage is None:
+            return cls()
+
+        # Extract by_model data if available
+        by_model = {}
+        if hasattr(usage, "by_model") and usage.by_model:
+            for model, model_usage in usage.by_model.items():
+                by_model[model] = {
+                    "input_tokens": getattr(model_usage, "total_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(model_usage, "total_completion_tokens", 0) or 0,
+                    "cached_tokens": getattr(model_usage, "total_prompt_cached_tokens", 0) or 0,
+                    "total_cost": getattr(model_usage, "total_cost", 0) or 0,
+                }
+
+        return cls(
+            input_tokens=getattr(usage, "total_prompt_tokens", 0) or 0,
+            output_tokens=getattr(usage, "total_completion_tokens", 0) or 0,
+            cached_tokens=getattr(usage, "total_prompt_cached_tokens", 0) or 0,
+            input_cost=getattr(usage, "total_prompt_cost", 0) or 0,
+            output_cost=getattr(usage, "total_completion_cost", 0) or 0,
+            cached_cost=getattr(usage, "total_prompt_cached_cost", 0) or 0,
+            total_cost=getattr(usage, "total_cost", 0) or 0,
+            entry_count=getattr(usage, "entry_count", 0) or 0,
+            by_model=by_model,
+        )
+
+
+class CostMetrics(BaseModel):
+    """Cost tracking for an evaluation run."""
+
+    token_usage: TokenUsage = Field(
+        default_factory=TokenUsage,
+        description="Token usage breakdown",
+    )
+    estimated_cost_usd: float | None = Field(
+        default=None,
+        description="Estimated cost in USD (if available from provider)",
+    )
+    cost_per_item: dict[str, float] = Field(
+        default_factory=dict,
+        description="Estimated cost per item in USD",
+    )
+    tokens_per_item: dict[str, TokenUsage] = Field(
+        default_factory=dict,
+        description="Token usage per item",
+    )
+
+    @property
+    def avg_cost_per_item(self) -> float | None:
+        """Average cost per item in USD."""
+        if not self.cost_per_item:
+            return None
+        return sum(self.cost_per_item.values()) / len(self.cost_per_item)
+
+    @property
+    def avg_tokens_per_item(self) -> int | None:
+        """Average total tokens per item."""
+        if not self.tokens_per_item:
+            return None
+        total = sum(t.total_tokens for t in self.tokens_per_item.values())
+        return total // len(self.tokens_per_item)
+
+
+class CartItem(BaseModel):
+    """Represents an item found in the shopping cart."""
+
+    name: str = Field(description="Product name as displayed in cart")
+    quantity: int = Field(default=1, description="Quantity in cart")
+    price: str | None = Field(default=None, description="Price as displayed (e.g., '$4.99')")
+    raw_text: str | None = Field(default=None, description="Raw text extracted from cart")
+
+    @field_validator("quantity", mode="before")
+    @classmethod
+    def coerce_quantity_to_int(cls, v):
+        if isinstance(v, float):
+            return int(v)
+        return v
+
+    def matches(self, target: str, fuzzy: bool = True) -> bool:
+        """Check if this cart item matches a target item string.
+
+        Args:
+            target: Target item to match (e.g., 'apples', '2 liters milk')
+            fuzzy: Use fuzzy matching (contains) vs exact match
+
+        Returns:
+            True if this item matches the target
+        """
+        name_lower = self.name.lower()
+        target_lower = target.lower()
+
+        # Extract just the product name from target (remove quantity prefixes)
+        # "6 apples" -> "apples", "2 liters milk" -> "milk"
+        target_words = target_lower.split()
+        product_words = [w for w in target_words if not w.replace(".", "").isdigit() and w not in ("liters", "liter", "kg", "g", "lb", "oz", "ml", "l")]
+
+        if fuzzy:
+            # Check if any product word is in the cart item name
+            return any(word in name_lower for word in product_words)
+        else:
+            return target_lower in name_lower or name_lower in target_lower
+
+
+class RunMetrics(BaseModel):
+    """Timing and performance metrics for an evaluation run."""
+
+    start_time: datetime = Field(description="When the run started")
+    end_time: datetime | None = Field(default=None, description="When the run ended")
+    total_duration_seconds: float | None = Field(default=None, description="Total run duration")
+
+    # Per-item timings
+    item_durations: dict[str, float] = Field(
+        default_factory=dict,
+        description="Duration in seconds for each item (item -> seconds)",
+    )
+
+    # Agent step counts
+    steps_per_item: dict[str, int] = Field(
+        default_factory=dict,
+        description="Number of agent steps taken for each item",
+    )
+
+    # Cart verification timing
+    cart_check_duration_seconds: float | None = Field(
+        default=None,
+        description="Time taken to verify cart contents",
+    )
+
+    def finalize(self, end_time: datetime | None = None) -> None:
+        """Finalize metrics with end time and calculate totals."""
+        self.end_time = end_time or datetime.now()
+        self.total_duration_seconds = (self.end_time - self.start_time).total_seconds()
+
+    @property
+    def avg_item_duration(self) -> float | None:
+        """Average duration per item in seconds."""
+        if not self.item_durations:
+            return None
+        return sum(self.item_durations.values()) / len(self.item_durations)
+
+    @property
+    def avg_steps_per_item(self) -> float | None:
+        """Average agent steps per item."""
+        if not self.steps_per_item:
+            return None
+        return sum(self.steps_per_item.values()) / len(self.steps_per_item)
+
+
+class ItemResult(BaseModel):
+    """Result for a single item addition attempt."""
+
+    item: str = Field(description="The item that was requested")
+    status: Literal["success", "failed", "uncertain", "timeout", "error"] = Field(
+        description="Result status"
+    )
+    duration_seconds: float = Field(description="Time taken for this item")
+    steps_taken: int = Field(default=0, description="Number of agent steps")
+    success_evidence: str | None = Field(
+        default=None, description="Evidence of success from agent history"
+    )
+    error_message: str | None = Field(default=None, description="Error message if failed")
+    matched_cart_item: CartItem | None = Field(
+        default=None, description="Cart item that matched this request"
+    )
+    token_usage: TokenUsage = Field(
+        default_factory=TokenUsage,
+        description="Token usage for this item's agent run",
+    )
+    estimated_cost_usd: float | None = Field(
+        default=None,
+        description="Estimated cost in USD for this item's agent run",
+    )
+
+
+class EvalResult(BaseModel):
+    """Complete result for an evaluation run."""
+
+    run_name: str = Field(description="Name of the evaluation run")
+    config_summary: dict = Field(
+        default_factory=dict,
+        description="Summary of configuration used",
+    )
+
+    # Overall status
+    status: Literal["success", "partial", "failed", "error"] = Field(
+        default="error",
+        description="Overall run status",
+    )
+    success_rate: float = Field(
+        default=0.0,
+        description="Percentage of items successfully added (0.0 - 1.0)",
+    )
+
+    # Item-level results
+    items_requested: list[str] = Field(default_factory=list, description="Items that were requested")
+    item_results: list[ItemResult] = Field(default_factory=list, description="Per-item results")
+
+    # Cart verification
+    cart_items: list[CartItem] = Field(default_factory=list, description="Items found in cart")
+    cart_verified: bool = Field(default=False, description="Whether cart was successfully verified")
+    cart_raw_content: str | None = Field(default=None, description="Raw cart content extracted")
+    cart_extraction_error: str | None = Field(default=None, description="Error during cart extraction, if any")
+    judge_error: str | None = Field(default=None, description="Error from LLM judge, if any")
+
+    # Timing metrics
+    metrics: RunMetrics = Field(default_factory=lambda: RunMetrics(start_time=datetime.now()))
+
+    # Cost metrics
+    cost_metrics: CostMetrics = Field(
+        default_factory=CostMetrics,
+        description="Token usage and cost tracking",
+    )
+
+    # Metadata
+    timestamp: datetime = Field(default_factory=datetime.now)
+    profile_dir: str | None = Field(default=None, description="Temp profile directory used")
+    error: str | None = Field(default=None, description="Error message if run failed")
+
+    def calculate_success_rate(self) -> float:
+        """Calculate and update the success rate based on item results.
+
+        Takes into account cart extraction errors and judge errors when
+        determining overall status. If there was a critical error preventing
+        verification, status will be 'error' regardless of item statuses.
+        """
+        if not self.item_results:
+            self.success_rate = 0.0
+        else:
+            successes = sum(1 for r in self.item_results if r.status == "success")
+            self.success_rate = successes / len(self.item_results)
+
+        # Update overall status, considering errors
+        if self.error or self.cart_extraction_error or self.judge_error:
+            # There was a critical error during the run
+            self.status = "error"
+        elif self.success_rate == 1.0:
+            self.status = "success"
+        elif self.success_rate > 0:
+            self.status = "partial"
+        else:
+            self.status = "failed"
+
+        return self.success_rate
+
+    def get_summary(self) -> str:
+        """Get a human-readable summary of the evaluation result."""
+        lines = [
+            f"Evaluation: {self.run_name}",
+            f"Status: {self.status.upper()}",
+            f"Success Rate: {self.success_rate:.1%}",
+        ]
+
+        # Show any errors
+        if self.error:
+            lines.append(f"Error: {self.error}")
+        if self.cart_extraction_error:
+            lines.append(f"Cart Extraction Error: {self.cart_extraction_error}")
+        if self.judge_error:
+            lines.append(f"Judge Error: {self.judge_error}")
+
+        lines.append("")
+        lines.append("Items:")
+
+        for result in self.item_results:
+            status_icon = {
+                "success": "[+]",
+                "failed": "[-]",
+                "uncertain": "[?]",
+                "timeout": "[T]",
+                "error": "[!]",
+            }.get(result.status, "[?]")
+            lines.append(f"  {status_icon} {result.item} ({result.duration_seconds:.1f}s, {result.steps_taken} steps)")
+            if result.matched_cart_item:
+                lines.append(f"      -> Found: {result.matched_cart_item.name}")
+
+        lines.append("")
+        lines.append("Cart Contents:")
+        if self.cart_items:
+            for item in self.cart_items:
+                price_str = f" - {item.price}" if item.price else ""
+                lines.append(f"  - {item.quantity}x {item.name}{price_str}")
+        else:
+            lines.append("  (empty or not verified)")
+
+        if self.metrics.total_duration_seconds:
+            lines.append("")
+            lines.append(f"Total Duration: {self.metrics.total_duration_seconds:.1f}s")
+            if self.metrics.avg_item_duration:
+                lines.append(f"Avg per Item: {self.metrics.avg_item_duration:.1f}s")
+
+        # Cost metrics
+        usage = self.cost_metrics.token_usage
+        if usage.total_tokens > 0:
+            lines.append("")
+            lines.append("Token Usage:")
+            lines.append(f"  Input:  {usage.input_tokens:,}" + (f" ({usage.cached_tokens:,} cached)" if usage.cached_tokens > 0 else ""))
+            lines.append(f"  Output: {usage.output_tokens:,}")
+            lines.append(f"  Total:  {usage.total_tokens:,}")
+            if self.cost_metrics.avg_tokens_per_item:
+                lines.append(f"  Avg per Item: {self.cost_metrics.avg_tokens_per_item:,}")
+
+            # Show cost breakdown if available
+            if usage.total_cost > 0:
+                lines.append("")
+                lines.append("Cost Breakdown:")
+                if usage.input_cost > 0:
+                    lines.append(f"  Input:  ${usage.input_cost:.6f}")
+                if usage.cached_cost > 0:
+                    lines.append(f"  Cached: ${usage.cached_cost:.6f}")
+                if usage.output_cost > 0:
+                    lines.append(f"  Output: ${usage.output_cost:.6f}")
+                lines.append(f"  Total:  ${usage.total_cost:.4f}")
+            elif self.cost_metrics.estimated_cost_usd is not None:
+                lines.append(f"  Estimated Cost: ${self.cost_metrics.estimated_cost_usd:.4f}")
+
+            # Show per-model breakdown if multiple models used
+            if usage.by_model and len(usage.by_model) > 1:
+                lines.append("")
+                lines.append("By Model:")
+                for model, model_usage in usage.by_model.items():
+                    model_tokens = model_usage.get("input_tokens", 0) + model_usage.get("output_tokens", 0)
+                    model_cost = model_usage.get("total_cost", 0)
+                    cost_str = f", ${model_cost:.4f}" if model_cost > 0 else ""
+                    lines.append(f"  {model}: {model_tokens:,} tokens{cost_str}")
+
+        return "\n".join(lines)
+
+    def to_file(self, path: str | Path) -> None:
+        """Save result to a JSON file.
+
+        Args:
+            path: Path to save the result file
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(self.model_dump(mode="json"), f, indent=2, default=str)
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> EvalResult:
+        """Load result from a JSON file.
+
+        Args:
+            path: Path to the result file
+
+        Returns:
+            EvalResult instance
+        """
+        with open(path) as f:
+            data = json.load(f)
+        return cls.model_validate(data)
+
+
+class EvalSession(BaseModel):
+    """Results from a complete evaluation session with multiple runs."""
+
+    name: str = Field(description="Session name")
+    results: list[EvalResult] = Field(default_factory=list)
+    start_time: datetime = Field(default_factory=datetime.now)
+    end_time: datetime | None = Field(default=None)
+
+    def add_result(self, result: EvalResult) -> None:
+        """Add a result to the session."""
+        self.results.append(result)
+
+    def finalize(self) -> None:
+        """Mark the session as complete."""
+        self.end_time = datetime.now()
+
+    @property
+    def total_duration_seconds(self) -> float | None:
+        """Total session duration in seconds."""
+        if not self.end_time:
+            return None
+        return (self.end_time - self.start_time).total_seconds()
+
+    @property
+    def overall_success_rate(self) -> float:
+        """Average success rate across all runs."""
+        if not self.results:
+            return 0.0
+        return sum(r.success_rate for r in self.results) / len(self.results)
+
+    @property
+    def total_token_usage(self) -> TokenUsage:
+        """Total token usage across all runs."""
+        total = TokenUsage()
+        for result in self.results:
+            total = total + result.cost_metrics.token_usage
+        return total
+
+    @property
+    def total_estimated_cost_usd(self) -> float | None:
+        """Total estimated cost across all runs."""
+        costs = [r.cost_metrics.estimated_cost_usd for r in self.results if r.cost_metrics.estimated_cost_usd is not None]
+        return sum(costs) if costs else None
+
+    def get_summary(self) -> str:
+        """Get a summary of the entire session."""
+        lines = [
+            f"Evaluation Session: {self.name}",
+            f"Runs: {len(self.results)}",
+            f"Overall Success Rate: {self.overall_success_rate:.1%}",
+            "",
+        ]
+
+        for result in self.results:
+            tokens_str = ""
+            if result.cost_metrics.token_usage.total_tokens > 0:
+                tokens_str = f" ({result.cost_metrics.token_usage.total_tokens:,} tokens)"
+            lines.append(f"  [{result.status.upper()}] {result.run_name}: {result.success_rate:.1%}{tokens_str}")
+
+        if self.total_duration_seconds:
+            lines.append("")
+            lines.append(f"Total Duration: {self.total_duration_seconds:.1f}s")
+
+        # Add aggregate token usage
+        total_usage = self.total_token_usage
+        if total_usage.total_tokens > 0:
+            lines.append("")
+            lines.append("Total Token Usage:")
+            lines.append(f"  Input:  {total_usage.input_tokens:,}" + (f" ({total_usage.cached_tokens:,} cached)" if total_usage.cached_tokens > 0 else ""))
+            lines.append(f"  Output: {total_usage.output_tokens:,}")
+            lines.append(f"  Total:  {total_usage.total_tokens:,}")
+
+            # Show cost breakdown if available
+            if total_usage.total_cost > 0:
+                lines.append("")
+                lines.append("Cost Breakdown:")
+                if total_usage.input_cost > 0:
+                    lines.append(f"  Input:  ${total_usage.input_cost:.6f}")
+                if total_usage.cached_cost > 0:
+                    lines.append(f"  Cached: ${total_usage.cached_cost:.6f}")
+                if total_usage.output_cost > 0:
+                    lines.append(f"  Output: ${total_usage.output_cost:.6f}")
+                lines.append(f"  Total:  ${total_usage.total_cost:.4f}")
+            elif self.total_estimated_cost_usd is not None:
+                lines.append(f"  Estimated Cost: ${self.total_estimated_cost_usd:.4f}")
+
+            # Show per-model breakdown
+            if total_usage.by_model:
+                lines.append("")
+                lines.append("By Model:")
+                for model, model_usage in total_usage.by_model.items():
+                    model_tokens = model_usage.get("input_tokens", 0) + model_usage.get("output_tokens", 0)
+                    model_cost = model_usage.get("total_cost", 0)
+                    cost_str = f", ${model_cost:.4f}" if model_cost > 0 else ""
+                    lines.append(f"  {model}: {model_tokens:,} tokens{cost_str}")
+
+        return "\n".join(lines)
+
+    def to_file(self, path: str | Path) -> None:
+        """Save session to a JSON file."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(self.model_dump(mode="json"), f, indent=2, default=str)

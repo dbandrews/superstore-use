@@ -1,0 +1,8 @@
+headless: true
+use_stealth: false
+wait_between_actions: 3
+min_wait_page_load: 3
+wait_for_network_idle: 3
+window_width: 1920
+window_height: 1080
+api_key: null  # Uses default API key

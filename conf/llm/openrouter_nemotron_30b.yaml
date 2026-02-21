@@ -1,0 +1,8 @@
+# NVIDIA Nemotron 30B (3B active) via OpenRouter - efficient MoE
+# $0.00005/1K tokens, 262k context
+model: nvidia/nemotron-3-nano-30b-a3b
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

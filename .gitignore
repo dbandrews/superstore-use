@@ -1,4 +1,12 @@
 # Python
+outputs/
+multirun/
+
+# Ignore all contents of superstore-profile except .gitkeep placeholder
+superstore-profile/*
+!superstore-profile/.gitkeep
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *.egg-info/

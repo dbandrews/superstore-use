@@ -1,0 +1,8 @@
+# DeepSeek R1 Distill Llama 70B via OpenRouter - reasoning model, very cheap
+# $0.00003/1K tokens, 131k context
+model: deepseek/deepseek-r1-distill-llama-70b
+provider: openrouter
+temperature: 0.0
+use_vision: false
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY

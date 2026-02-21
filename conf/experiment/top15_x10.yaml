@@ -1,0 +1,48 @@
+# @package _global_
+
+# Top 15 models x 10 runs experiment
+# Runs each of the top 15 models (by accuracy) 10 times for statistical significance.
+#
+# Top 15 models (from multirun/2026-02-05/23-12-11):
+#   1. gpt41                                        90%  (openai)
+#   2. openrouter_gpt_oss_20b                       80%  (openrouter)
+#   3. openrouter_qwen3_30b_a3b_instruct_2507       70%  (openrouter)
+#   4. gpt5_nano                                    70%  (openai)
+#   5. openrouter_llama_3_3_nemotron_super_49b_v1_5 60%  (openrouter)
+#   6. openrouter_llama_3_3_70b_instruct            60%  (openrouter)
+#   7. openrouter_deepseek_chat_v3_0324             60%  (openrouter)
+#   8. openrouter_qwen3_next_80b_a3b_thinking       50%  (openrouter)
+#   9. openrouter_qwen3_32b                         50%  (openrouter)
+#  10. openrouter_qwen3_235b_a22b_thinking_2507     50%  (openrouter)
+#  11. openrouter_qwen_72b                          50%  (openrouter)
+#  12. gpt_oss_120b                                 50%  (groq)
+#  13. openrouter_llama_4_maverick                  50%  (openrouter)
+#  14. gpt41_nano                                   40%  (openai)
+#  15. gpt41_mini                                   40%  (openai)
+#
+# Usage (150 total runs = 15 models x 10 repeats):
+#
+#   Sequential:
+#     uv run -m src.eval.cli --multirun +experiment=top15_x10 \
+#       'llm=gpt41,openrouter_gpt_oss_20b,openrouter_qwen3_30b_a3b_instruct_2507,gpt5_nano,openrouter_llama_3_3_nemotron_super_49b_v1_5,openrouter_llama_3_3_70b_instruct,openrouter_deepseek_chat_v3_0324,openrouter_qwen3_next_80b_a3b_thinking,openrouter_qwen3_32b,openrouter_qwen3_235b_a22b_thinking_2507,openrouter_qwen_72b,gpt_oss_120b,openrouter_llama_4_maverick,gpt41_nano,gpt41_mini' \
+#       'run_id=range(1,11)'
+#
+#   Parallel (with joblib launcher):
+# uv run -m src.eval.cli --multirun hydra/launcher=joblib +experiment=top15_x10 \
+#   'llm=gpt41,openrouter_gpt_oss_20b,openrouter_qwen3_30b_a3b_instruct_2507,gpt5_nano,openrouter_llama_3_3_nemotron_super_49b_v1_5,openrouter_llama_3_3_70b_instruct,openrouter_deepseek_chat_v3_0324,openrouter_qwen3_next_80b_a3b_thinking,openrouter_qwen3_32b,openrouter_qwen3_235b_a22b_thinking_2507,openrouter_qwen_72b,gpt_oss_120b,openrouter_llama_4_maverick,gpt41_nano,gpt41_mini' \
+#   'run_id=range(1,11)'
+
+defaults:
+  - override /browser: headless
+  - override /prompt: default
+
+name: top15_x10
+
+# Sweep parameter for repeated runs (doesn't affect eval behavior).
+# Use 'run_id=range(1,11)' in --multirun to get 10 runs per model.
+run_id: 1
+
+# Use default items from config.yaml (10 items)
+
+max_steps: 15
+timeout_seconds: 300.0
