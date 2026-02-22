@@ -10,7 +10,7 @@ function clog(msg: string, level = "info") {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ level, msg }),
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 // ─── Constants ───
@@ -19,10 +19,10 @@ const REALTIME_URL = `https://api.openai.com/v1/realtime?model=${REALTIME_MODEL}
 
 // Orb color per status — [r, g, b] floats 0-1
 const STATE_COLORS: Record<string, number[]> = {
-  connecting:   [0.94, 0.63, 0.19],
-  listening:    [0.20, 0.82, 0.41],
-  speaking:     [0.88, 0.24, 0.24],
-  thinking:     [0.29, 0.56, 0.96],
+  connecting: [0.94, 0.63, 0.19],
+  listening: [0.20, 0.82, 0.41],
+  speaking: [0.88, 0.24, 0.24],
+  thinking: [0.29, 0.56, 0.96],
   disconnected: [0.35, 0.38, 0.50],
 };
 
@@ -242,7 +242,7 @@ function renderOrbFrame(time: number) {
     const norm = Math.min(1, Math.max(0, (avg - 13) / 200));
     state.smoothedAudioLevel += (norm - state.smoothedAudioLevel) * 0.04;
   } else {
-    state.smoothedAudioLevel += (0 - state.smoothedAudioLevel) * 0.08;
+    state.smoothedAudioLevel += (0 - state.smoothedAudioLevel) * 0.04;
   }
 
   const level = state.smoothedAudioLevel;
@@ -277,14 +277,14 @@ function renderOrbFrame(time: number) {
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  // Update glow color and intensity
+  // Update glow color and intensity — subtle changes only
   const c = state.orbColor;
   const r = Math.round(c[0] * 255);
   const g = Math.round(c[1] * 255);
   const b = Math.round(c[2] * 255);
   const glowOpacity = 0.14 + level * 1.2;
   orbGlow.style.background = `rgba(${r}, ${g}, ${b}, ${glowOpacity})`;
-  orbClip.style.boxShadow = `0 0 ${60 + level * 40}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.3})`;
+  orbClip.style.boxShadow = `0 0 ${60 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.1})`;
 
   // Scale orb with audio
   const scale = 1 + level * 0.43;
@@ -463,7 +463,7 @@ async function startSession() {
     pc.ontrack = (ev) => {
       audioEl.srcObject = ev.streams[0];
       // Ensure playback starts (Firefox may block autoplay if user gesture expired)
-      audioEl.play().catch(() => {});
+      audioEl.play().catch(() => { });
       clog("Remote audio track received");
 
       // Firefox: wire the WebRTC stream directly to the analyser via
@@ -556,11 +556,11 @@ function endSession() {
   }
   // Disconnect and close audio graph
   if (state.remoteSource) {
-    try { state.remoteSource.disconnect(); } catch (_) {}
+    try { state.remoteSource.disconnect(); } catch (_) { }
     state.remoteSource = null;
   }
   if (state.audioCtx) {
-    state.audioCtx.close().catch(() => {});
+    state.audioCtx.close().catch(() => { });
     state.audioCtx = null;
     state.analyser = null;
     state.analyserData = null;
