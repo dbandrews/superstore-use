@@ -240,9 +240,9 @@ function renderOrbFrame(time: number) {
     for (let i = 0; i < state.analyserData.length; i++) sum += state.analyserData[i];
     const avg = sum / state.analyserData.length;
     const norm = Math.min(1, Math.max(0, (avg - 16) / 90));
-    state.smoothedAudioLevel += (norm - state.smoothedAudioLevel) * 0.15;
+    state.smoothedAudioLevel += (norm - state.smoothedAudioLevel) * 0.06;
   } else {
-    state.smoothedAudioLevel += (0 - state.smoothedAudioLevel) * 0.08;
+    state.smoothedAudioLevel += (0 - state.smoothedAudioLevel) * 0.04;
   }
 
   const level = state.smoothedAudioLevel;
@@ -253,9 +253,9 @@ function renderOrbFrame(time: number) {
     state.orbColor[i] += (target[i] - state.orbColor[i]) * 0.04;
   }
 
-  // Audio-reactive uniforms
-  const amplitude = 0.18 + level * 1.7;
-  const speed = 0.75 + level * 0.5;
+  // Audio-reactive uniforms — speech drives faster flow, not shape distortion
+  const amplitude = 0.18 + level * 0.25;
+  const speed = 0.75 + level * 1.5;
 
   // Render WebGL
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -277,17 +277,17 @@ function renderOrbFrame(time: number) {
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  // Update glow color and intensity
+  // Update glow color and intensity — subtle changes only
   const c = state.orbColor;
   const r = Math.round(c[0] * 255);
   const g = Math.round(c[1] * 255);
   const b = Math.round(c[2] * 255);
-  const glowOpacity = 0.15 + level * 1.2;
+  const glowOpacity = 0.15 + level * 0.25;
   orbGlow.style.background = `rgba(${r}, ${g}, ${b}, ${glowOpacity})`;
-  orbClip.style.boxShadow = `0 0 ${60 + level * 40}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.3})`;
+  orbClip.style.boxShadow = `0 0 ${60 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.1})`;
 
-  // Scale orb with audio
-  const scale = 1 + level * 0.35;
+  // Subtle scale breathing with audio
+  const scale = 1 + level * 0.06;
   orbClip.style.transform = `scale(${scale})`;
 
   state.orbAnimId = requestAnimationFrame(renderOrbFrame);
