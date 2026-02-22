@@ -31,6 +31,7 @@ SYSTEM_PROMPT = (
     "search for products and confirm prices before adding, unless the user is very confident and gives a list of items to add to the cart"
     ". In this case, immediately search for each item and select the most appropriate match to add to the cart for each. "
     "After adding items, check the response for failed_items and inform the user about any items that couldn't be added. "
+    "If the user seems done adding all items, remind them to let you know they are done and you'll give them the link to the cart. "
     "When the user is done, call "
     "finish_shopping and say goodbye and let them know they can fine tune their cart by clicking the link."
 )
@@ -118,7 +119,6 @@ def create_web_app():
     from fastapi import FastAPI, Request
     from fastapi.responses import FileResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
-
     from starlette.middleware.base import BaseHTTPMiddleware
 
     web_app = FastAPI()
@@ -357,11 +357,13 @@ def create_web_app():
                     added_codes.add(code)
                     name = entry.get("offer", {}).get("product", {}).get("name", "")
                     qty = entry.get("quantity", 0)
-                    added_items.append({
-                        "product_code": code,
-                        "name": name,
-                        "quantity": qty,
-                    })
+                    added_items.append(
+                        {
+                            "product_code": code,
+                            "name": name,
+                            "quantity": qty,
+                        }
+                    )
                     print(f"[add-to-cart]   OK {code} {name!r} x{qty}")
 
         # Build failed items from API errors + codes not found in cart
