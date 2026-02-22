@@ -3,16 +3,6 @@
 // Voice-reactive iridescent orb + live caption + collapsible transcript
 // ═══════════════════════════════════════════════════════════════
 
-// ─── Logging ───
-function clog(msg: string, level = "info") {
-  console.log(`[client:${level}] ${msg}`);
-  fetch("/api/log", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ level, msg }),
-  }).catch(() => { });
-}
-
 // ─── Constants ───
 const REALTIME_MODEL = "gpt-realtime-mini";
 const REALTIME_URL = `https://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`;
@@ -158,7 +148,7 @@ function compileShader(gl: WebGLRenderingContext, type: number, source: string):
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    clog("Shader compile error: " + gl.getShaderInfoLog(shader), "error");
+    console.error("Shader compile error: " + gl.getShaderInfoLog(shader));
     gl.deleteShader(shader);
     return null;
   }
@@ -172,7 +162,7 @@ function linkProgram(gl: WebGLRenderingContext, vs: WebGLShader, fs: WebGLShader
   gl.attachShader(program, fs);
   gl.linkProgram(program);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    clog("Program link error: " + gl.getProgramInfoLog(program), "error");
+    console.error("Program link error: " + gl.getProgramInfoLog(program));
     return null;
   }
   return program;
@@ -182,7 +172,7 @@ function initOrbGL() {
   const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
   const gl = canvas.getContext("webgl");
   if (!gl) {
-    clog("WebGL not supported", "error");
+    console.error("WebGL not supported");
     return;
   }
 
@@ -387,6 +377,9 @@ function showCartLink() {
   if (state.cart_id) {
     const a = document.getElementById("cart-link-a") as HTMLAnchorElement;
     a.href = `https://www.realcanadiansuperstore.ca/en/cartReview?forceCartId=${state.cart_id}`;
+    a.addEventListener("click", () => {
+      endSession();
+    }, { once: true });
   }
   cartLink.style.display = "block";
 }
@@ -450,7 +443,7 @@ async function startSession() {
     // Firefox path: audio element plays normally; createMediaStreamSource
     // is wired up in pc.ontrack once the remote stream is available.
 
-    clog("Requesting ephemeral token...");
+    console.log("Requesting ephemeral token...");
     const tokenRes = await fetch("/token");
     if (!tokenRes.ok) throw new Error("Token request failed: " + tokenRes.status);
     const tokenData = await tokenRes.json();
@@ -464,7 +457,7 @@ async function startSession() {
       audioEl.srcObject = ev.streams[0];
       // Ensure playback starts (Firefox may block autoplay if user gesture expired)
       audioEl.play().catch(() => { });
-      clog("Remote audio track received");
+      console.log("Remote audio track received");
 
       // Firefox: wire the WebRTC stream directly to the analyser via
       // createMediaStreamSource. Don't connect to destination — the
@@ -474,9 +467,9 @@ async function startSession() {
           const source = state.audioCtx.createMediaStreamSource(ev.streams[0]);
           source.connect(state.analyser);
           state.remoteSource = source;
-          clog("Audio analysis via createMediaStreamSource (Firefox)");
+          console.log("Audio analysis via createMediaStreamSource (Firefox)");
         } catch (e: any) {
-          clog("createMediaStreamSource failed: " + e.message, "error");
+          console.error("createMediaStreamSource failed: " + e.message);
         }
       }
     };
@@ -489,12 +482,17 @@ async function startSession() {
     state.dc = dc;
 
     dc.onopen = () => {
-      clog("Data channel open, WebRTC connected");
+      console.log("Data channel open, WebRTC connected");
       setStatus("listening");
-      addMessage("system", "Connected");
-      setCaption("Connected", "system");
-
-      // Agent speaks first
+      // Prompt the agent to greet the user and explain what it can do
+      sendDataChannelMessage({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text: "Greet the user warmly and briefly tell them what you can help them with." }],
+        },
+      });
       sendDataChannelMessage({ type: "response.create" });
     };
 
@@ -518,7 +516,7 @@ async function startSession() {
       body: pc.localDescription!.sdp,
     });
     if (!sdpRes.ok) throw new Error("SDP exchange failed: " + sdpRes.status);
-    clog("SDP exchange complete");
+    console.log("SDP exchange complete");
 
     const answerSdp = await sdpRes.text();
     await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
@@ -529,7 +527,7 @@ async function startSession() {
       }
     };
   } catch (err: any) {
-    clog("Session start failed: " + err.message, "error");
+    console.error("Session start failed: " + err.message);
     addMessage("system", "Error: " + err.message);
     setCaption("Error: " + err.message, "system");
     setStatus("disconnected");
@@ -607,12 +605,15 @@ function handleServerEvent(event: any) {
       currentMsgEl = null;
       state.currentAssistantMsg = "";
       setStatus("listening");
-      fadeCaption();
+      break;
+
+    case "input_audio_buffer.speech_started":
+      liveCaption.classList.remove("visible");
       break;
 
     case "conversation.item.input_audio_transcription.completed":
       if (event.transcript) {
-        clog(`User said: "${event.transcript}"`);
+        console.log(`User said: "${event.transcript}"`);
         const userEl = document.createElement("div");
         userEl.className = "msg user";
         userEl.textContent = event.transcript;
@@ -668,7 +669,7 @@ async function handleToolCall(event: any) {
     args = {};
   }
 
-  clog(`Tool call: ${name}(${argsStr})`);
+  console.log(`Tool call: ${name}(${argsStr})`);
   const label = name.replace(/_/g, " ");
   addMessage("system", `Looking up: ${label}...`);
   setCaption(`Looking up: ${label}...`, "system");
@@ -695,10 +696,12 @@ async function handleToolCall(event: any) {
     }
   }
 
-  if (name === "add_to_cart" && !result.error && args.items) {
-    for (const item of args.items) {
-      const displayName = state.productNames[item.product_code] || item.product_code;
-      addCartItem(displayName, `x${item.quantity}`);
+  if (name === "add_to_cart" && !result.error) {
+    if (result.added_items) {
+      for (const item of result.added_items) {
+        const displayName = state.productNames[item.product_code] || item.name || item.product_code;
+        addCartItem(displayName, `x${item.quantity}`);
+      }
     }
   }
 

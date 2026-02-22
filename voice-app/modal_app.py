@@ -29,7 +29,8 @@ SYSTEM_PROMPT = (
     "help them brainstorm simple recipes and build a shopping list. Keep responses concise "
     "since this is a voice conversation - avoid reading long lists. When adding items, "
     "search for products and confirm prices before adding, unless the user is very confident and gives a list of items to add to the cart"
-    ". In this case, immediately search for each item and select the most appropriate match to add to the cart for each."
+    ". In this case, immediately search for each item and select the most appropriate match to add to the cart for each. "
+    "After adding items, check the response for failed_items and inform the user about any items that couldn't be added. "
     "When the user is done, call "
     "finish_shopping and say goodbye and let them know they can fine tune their cart by clicking the link."
 )
@@ -65,7 +66,7 @@ TOOLS = [
     {
         "type": "function",
         "name": "search_products",
-        "description": "Search for products at the selected store",
+        "description": "Search for products at the selected store. Only returns in-stock products.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -77,7 +78,7 @@ TOOLS = [
     {
         "type": "function",
         "name": "add_to_cart",
-        "description": "Add items to the shopping cart",
+        "description": "Add items to the shopping cart. Returns added_items (successfully added) and failed_items (with reason). Check failed_items and inform the user.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -107,6 +108,7 @@ TOOLS = [
 
 
 def create_web_app():
+    import json
     import math
     import os
     import re
@@ -117,7 +119,17 @@ def create_web_app():
     from fastapi.responses import FileResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
 
+    from starlette.middleware.base import BaseHTTPMiddleware
+
     web_app = FastAPI()
+
+    class NoCacheMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            response.headers["Cache-Control"] = "no-cache"
+            return response
+
+    web_app.add_middleware(NoCacheMiddleware)
 
     @web_app.get("/token")
     async def get_token():
@@ -131,11 +143,20 @@ def create_web_app():
                 },
                 json={
                     "model": "gpt-realtime-mini",
-                    "voice": "alloy",
+                    "voice": "cedar",
                     "instructions": SYSTEM_PROMPT,
                     "tools": TOOLS,
                     "input_audio_transcription": {
                         "model": "whisper-1",
+                    },
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.75,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                    },
+                    "input_audio_noise_reduction": {
+                        "type": "near_field",
                     },
                 },
             )
@@ -203,6 +224,7 @@ def create_web_app():
             locations = loc_data
         else:
             locations = loc_data.get("pickupLocations", [])
+        print(f"[find-stores] PCX pickup-locations HTTP {loc_resp.status_code}, {len(locations)} locations")
 
         def distance(loc):
             gp = loc.get("geoPoint", {})
@@ -226,12 +248,15 @@ def create_web_app():
             }
             for loc in sorted_locs[:3]
         ]
+        for s in top3:
+            print(f"[find-stores]   #{s['storeId']} {s['name']} — {s['distance_km']}km — {s['address']}")
         return {"stores": top3}
 
     @web_app.post("/api/create-cart")
     async def create_cart(request: Request):
         body = await request.json()
         store_id = body.get("store_id")
+        print(f"[create-cart] Creating cart for store_id={store_id}")
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{PCX_BASE}/carts",
@@ -239,35 +264,54 @@ def create_web_app():
                 json={"bannerId": "superstore", "language": "en", "storeId": store_id},
             )
         data = resp.json()
-        return {"cart_id": data.get("cartId") or data.get("id")}
+        cart_id = data.get("cartId") or data.get("id")
+        print(f"[create-cart] HTTP {resp.status_code}, cart_id={cart_id}")
+        if resp.status_code != 200:
+            print(f"[create-cart] Error response: {json.dumps(data, indent=2)}")
+        return {"cart_id": cart_id}
 
     @web_app.post("/api/search-products")
     async def search_products(request: Request):
         body = await request.json()
+        term = body.get("term")
+        store_id = body.get("store_id")
+        print(f'[search] Searching "{term}" at store {store_id}')
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{PCX_BASE}/products/search",
                 headers=PCX_HEADERS,
                 json={
-                    "term": body.get("term"),
+                    "term": term,
                     "banner": "superstore",
-                    "storeId": body.get("store_id"),
+                    "storeId": store_id,
                     "lang": "en",
                     "cartId": body.get("cart_id"),
                     "pagination": {"from": 0, "size": 10},
                 },
             )
         data = resp.json()
-        results = [
-            {
+        total_results = data.get("pagination", {}).get("totalResults", "?")
+        all_results = data.get("results", [])
+        print(f"[search] HTTP {resp.status_code}, {total_results} total results, {len(all_results)} returned")
+        if resp.status_code != 200:
+            print(f"[search] Error response: {json.dumps(data, indent=2)}")
+        results = []
+        for p in all_results:
+            shoppable = p.get("shoppable", True)
+            stock = p.get("stockStatus", "OK")
+            if not shoppable or stock != "OK":
+                print(f"[search]   SKIP {p.get('code')} {p.get('name')!r} (shoppable={shoppable}, stock={stock})")
+                continue
+            price_obj = p.get("prices", {}).get("price", {}) or {}
+            item = {
                 "code": p.get("code"),
                 "name": p.get("name"),
                 "brand": p.get("brand"),
-                "price": (p.get("prices", {}).get("price", {}) or {}).get("value") or p.get("price"),
-                "unit": (p.get("prices", {}).get("price", {}) or {}).get("unit", ""),
+                "price": price_obj.get("value") or p.get("price"),
+                "unit": price_obj.get("unit", ""),
             }
-            for p in data.get("results", [])
-        ]
+            print(f"[search]   {item['code']} {item['brand'] or ''} {item['name']!r} ${item['price']} / {item['unit']}")
+            results.append(item)
         return {"products": results}
 
     @web_app.post("/api/add-to-cart")
@@ -276,6 +320,10 @@ def create_web_app():
         cart_id = body.get("cart_id")
         store_id = body.get("store_id")
         items = body.get("items", [])
+
+        print(f"[add-to-cart] Adding {len(items)} item(s) to cart {cart_id} at store {store_id}")
+        for item in items:
+            print(f"[add-to-cart]   {item['product_code']} x{item['quantity']}")
 
         entries = {}
         for item in items:
@@ -292,15 +340,52 @@ def create_web_app():
                 json={"entries": entries},
             )
         data = resp.json()
-        return {"success": True, "cart": data}
+        print(f"[add-to-cart] HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            print(f"[add-to-cart] Error response: {json.dumps(data, indent=2)}")
 
-    @web_app.post("/api/log")
-    async def log_endpoint(request: Request):
-        body = await request.json()
-        level = body.get("level", "info")
-        msg = body.get("msg", "")
-        print(f"[client:{level}] {msg}")
-        return {"ok": True}
+        # Parse which items actually made it into the cart
+        requested_codes = {item["product_code"] for item in items}
+        added_codes = set()
+        added_items = []
+        cart_obj = data.get("cart", data)  # response may nest under "cart" or be top-level
+        for order in cart_obj.get("orders", []):
+            for entry in order.get("entries", []):
+                product = entry.get("offer", {}).get("product", {})
+                code = product.get("code") or product.get("id", "")
+                if code in requested_codes:
+                    added_codes.add(code)
+                    name = entry.get("offer", {}).get("product", {}).get("name", "")
+                    qty = entry.get("quantity", 0)
+                    added_items.append({
+                        "product_code": code,
+                        "name": name,
+                        "quantity": qty,
+                    })
+                    print(f"[add-to-cart]   OK {code} {name!r} x{qty}")
+
+        # Build failed items from API errors + codes not found in cart
+        failed_items = []
+        for err in data.get("errors", []):
+            reason = err.get("message", "Unknown error")
+            pc = err.get("productCode", "")
+            failed_items.append({"product_code": pc, "reason": reason})
+            print(f"[add-to-cart]   FAIL {pc}: {reason}")
+        failed_codes = {f["product_code"] for f in failed_items}
+        for item in items:
+            code = item["product_code"]
+            if code not in added_codes and code not in failed_codes:
+                reason = "Item not found in cart after adding — may be unavailable"
+                failed_items.append({"product_code": code, "reason": reason})
+                print(f"[add-to-cart]   MISSING {code}: {reason}")
+
+        success = len(added_items) > 0
+        print(f"[add-to-cart] Result: {len(added_items)} added, {len(failed_items)} failed")
+        return {
+            "success": success,
+            "added_items": added_items,
+            "failed_items": failed_items,
+        }
 
     @web_app.post("/api/finish-shopping")
     async def finish_shopping():
