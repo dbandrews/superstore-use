@@ -491,8 +491,11 @@ async function startSession() {
     dc.onopen = () => {
       clog("Data channel open, WebRTC connected");
       setStatus("listening");
-      addMessage("system", "Connected - start speaking!");
-      setCaption("Connected - start speaking!", "system");
+      addMessage("system", "Connected");
+      setCaption("Connected", "system");
+
+      // Agent speaks first
+      sendDataChannelMessage({ type: "response.create" });
     };
 
     dc.onclose = () => {
