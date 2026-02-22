@@ -28,8 +28,10 @@ SYSTEM_PROMPT = (
     "to find the nearest stores. Present the top 3 stores and let them pick one. Then "
     "help them brainstorm simple recipes and build a shopping list. Keep responses concise "
     "since this is a voice conversation - avoid reading long lists. When adding items, "
-    "search for products and confirm prices before adding. When the user is done, call "
-    "finish_shopping and say goodbye."
+    "search for products and confirm prices before adding, unless the user is very confident and gives a list of items to add to the cart"
+    ". In this case, immediately search for each item and select the most appropriate match to add to the cart for each."
+    "When the user is done, call "
+    "finish_shopping and say goodbye and let them know they can fine tune their cart by clicking the link."
 )
 
 TOOLS = [
