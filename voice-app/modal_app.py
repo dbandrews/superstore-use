@@ -6,7 +6,7 @@ image = (
     .add_local_dir("./voice-app/public", remote_path="/app/public")
 )
 
-app = modal.App("superstore-voice")
+app = modal.App("pc-express-voice")
 
 PCX_BASE = "https://api.pcexpress.ca/pcx-bff/api/v1"
 PCX_HEADERS = {
@@ -22,10 +22,10 @@ PCX_HEADERS = {
 }
 
 SYSTEM_PROMPT = (
-    "You are a friendly grocery shopping assistant for Real Canadian Superstore. "
+    "You are a friendly grocery shopping assistant for PC Express. "
     "Help users shop by voice. Start by asking where they're located - they can give "
     "you their address, neighbourhood, city, or postal code. Use whatever they give you "
-    "to find the nearest stores. Present the top 3 stores and let them pick one. Then "
+    "to find the nearest PC Express pickup locations. Present the top 3 and let them pick one. Then "
     "help them brainstorm simple recipes and build a shopping list. Keep responses concise "
     "since this is a voice conversation - avoid reading long lists. When adding items, "
     "search for products and confirm prices before adding, unless the user is very confident and gives a list of items to add to the cart"
@@ -40,7 +40,7 @@ TOOLS = [
     {
         "type": "function",
         "name": "find_nearest_stores",
-        "description": "Find the nearest Superstore pickup locations by address, neighbourhood, city, or postal code",
+        "description": "Find the nearest PC Express pickup locations by address, neighbourhood, city, or postal code",
         "parameters": {
             "type": "object",
             "properties": {

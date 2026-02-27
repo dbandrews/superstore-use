@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// Superstore Voice — app.ts
+// PC Express Voice — app.ts
 // Voice-reactive iridescent orb + live caption + collapsible transcript
 // ═══════════════════════════════════════════════════════════════
 
@@ -707,7 +707,7 @@ async function handleToolCall(event: any) {
 
   if (name === "finish_shopping") {
     showCartLink();
-    addMessage("system", "Shopping complete! Review your cart on Superstore.");
+    addMessage("system", "Shopping complete! Review your cart on PC Express.");
     setCaption("Shopping complete!", "system");
   }
 
