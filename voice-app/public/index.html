@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PC Express Voice Shopping</title>
+  <title>PC Express Voice</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-void: #060610;
@@ -58,51 +58,29 @@
       z-index: 0;
     }
 
-    /* ─── Banner ─── */
-    .banner {
-      width: 100%;
-      padding: 8px 24px;
-      background: linear-gradient(90deg, var(--brand-blue) 0%, var(--brand-blue-light) 100%);
-      text-align: center;
-      font-size: 12px;
-      font-weight: 500;
-      color: rgba(255,255,255,0.85);
-      letter-spacing: 0.3px;
-      position: relative;
-      z-index: 11;
-    }
-
     /* ─── Header ─── */
     header {
       width: 100%;
       padding: 16px 24px;
       display: flex;
       align-items: center;
-      gap: 14px;
-      background: linear-gradient(180deg, rgba(15,15,30,0.9) 0%, transparent 100%);
-      border-bottom: 1px solid var(--border-subtle);
+      gap: 12px;
       position: relative;
       z-index: 10;
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
     }
-    header .logo {
-      width: 36px; height: 36px;
-      background: linear-gradient(135deg, var(--brand-red) 0%, #c72e2e 100%);
-      border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 16px;
-      box-shadow: 0 2px 12px rgba(226,62,62,0.25);
-      flex-shrink: 0;
+    header .wordmark {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+      color: var(--text-primary);
     }
-    header h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
-    header .badge {
+    header .poc-tag {
       margin-left: auto;
-      font-size: 10px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase;
-      color: var(--brand-blue-light);
-      background: rgba(42,90,174,0.12);
-      border: 1px solid rgba(42,90,174,0.2);
-      padding: 4px 10px; border-radius: 100px;
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--text-muted);
     }
 
     /* ─── Main ─── */
@@ -118,17 +96,7 @@
     #start-section {
       flex: 1;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 28px; padding: 60px 0;
-    }
-    #start-section .hero-text { text-align: center; }
-    #start-section .hero-text h2 {
-      font-family: 'Instrument Serif', Georgia, serif;
-      font-size: 28px; font-weight: 400; letter-spacing: -0.3px;
-      margin-bottom: 10px;
-    }
-    #start-section p {
-      color: var(--text-secondary); font-size: 14px; text-align: center;
-      max-width: 320px; line-height: 1.65; margin: 0 auto;
+      gap: 32px; padding: 60px 0;
     }
 
     /* ─── Mic Button ─── */
@@ -176,6 +144,11 @@
       background: var(--text-muted); transition: background 0.3s, box-shadow 0.3s;
     }
 
+    .teaser {
+      color: var(--text-secondary); font-size: 14px; text-align: center;
+      max-width: 320px; line-height: 1.6;
+    }
+
     @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
     /* ─── Session Section ─── */
@@ -196,12 +169,12 @@
     #status-bar {
       display: flex; align-items: center; gap: 8px;
       font-size: 12px; color: var(--text-secondary);
-      padding: 8px 16px;
+      padding: 6px 14px;
       background: var(--bg-glass);
       backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
       border: 1px solid var(--border-glass);
       border-radius: 100px;
-      margin-bottom: 20px;
+      margin-bottom: 24px;
     }
     #status-active { display: flex; align-items: center; gap: 8px; font-weight: 500; letter-spacing: 0.3px; }
     #status-active .dot {
@@ -217,16 +190,16 @@
     /* ─── Orb ─── */
     #orb-container {
       position: relative;
-      width: 220px; height: 220px;
+      width: 260px; height: 260px;
       display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
     }
     #orb-glow {
       position: absolute;
-      inset: -50px;
+      inset: -60px;
       border-radius: 50%;
       background: rgba(74,142,245,0.25);
-      filter: blur(70px);
+      filter: blur(80px);
       pointer-events: none;
       transition: background 0.8s ease;
     }
@@ -383,40 +356,32 @@
     /* ─── Responsive ─── */
     @media (max-width: 480px) {
       header { padding: 14px 16px; }
-      header h1 { font-size: 15px; }
-      header .badge { display: none; }
       main { padding: 0 16px 24px; }
-      #start-section { padding: 40px 0; gap: 24px; }
-      #start-section .hero-text h2 { font-size: 24px; }
+      #start-section { padding: 40px 0; gap: 28px; }
       #start-btn { width: 84px; height: 84px; }
       #start-btn svg { width: 30px; height: 30px; }
       .mic-ring::before { width: 120px; height: 120px; }
       .mic-ring::after { width: 104px; height: 104px; }
-      #orb-container { width: 180px; height: 180px; }
+      #orb-container { width: 200px; height: 200px; }
       #live-caption { font-size: 14px; padding: 8px 16px; }
     }
     @media (min-width: 768px) {
       header { padding: 18px 32px; }
       main { padding: 0 24px 40px; }
       #start-section { padding: 80px 0; }
-      #orb-container { width: 260px; height: 260px; }
+      #orb-container { width: 300px; height: 300px; }
     }
   </style>
 </head>
 <body>
-  <div class="banner">Proof of concept &mdash; voice-powered grocery shopping with PC Express pickup</div>
   <header>
-    <div class="logo">&#x1f6d2;</div>
-    <h1>PC Express Voice</h1>
-    <span class="badge">Beta</span>
+    <span class="wordmark">PC Express Voice</span>
+    <span class="poc-tag">Proof of concept</span>
   </header>
 
   <main>
     <!-- Start screen -->
     <div id="start-section">
-      <div class="hero-text">
-        <h2>Voice&ndash;powered grocery shopping</h2>
-      </div>
       <div class="mic-ring">
         <button id="start-btn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -428,7 +393,7 @@
         </button>
       </div>
       <div id="status"><span class="dot"></span><span id="status-text">Tap to start shopping</span></div>
-      <p>Tell me what groceries you need and I'll add them to your PC Express cart.</p>
+      <p class="teaser">Ideate on recipes and add groceries to your PC Express cart, all by voice.</p>
     </div>
 
     <!-- Session screen -->
