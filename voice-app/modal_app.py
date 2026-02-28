@@ -457,8 +457,14 @@ def create_web_app():
         }
 
     @web_app.post("/api/finish-shopping")
-    async def finish_shopping():
-        return {"success": True, "message": "Shopping session complete"}
+    async def finish_shopping(request: Request):
+        body = await request.json()
+        cart_id = body.get("cart_id")
+        banner = body.get("banner", "superstore")
+        base_url = BANNERS.get(banner, BANNERS["superstore"])["cart_url"]
+        cart_url = f"{base_url}?forceCartId={cart_id}" if cart_id else None
+        print(f"[finish-shopping] cart_id={cart_id}, banner={banner}, cart_url={cart_url}")
+        return {"success": True, "message": "Shopping session complete", "cart_url": cart_url}
 
     @web_app.get("/")
     async def index():
