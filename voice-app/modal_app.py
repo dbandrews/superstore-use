@@ -50,9 +50,9 @@ SYSTEM_PROMPT = (
     "search for products and confirm prices before adding, unless the user is very confident and gives a list of items to add to the cart"
     ". In this case, immediately search for each item and select the most appropriate match to add to the cart for each. "
     "After adding items, check the response for failed_items and inform the user about any items that couldn't be added. "
-    "If the user seems done adding all items, remind them to let you know they are done and you'll give them the link to the cart. "
-    "When the user is done, call "
-    "finish_shopping and say goodbye and let them know they can fine tune their cart by clicking the link."
+    "A link to the cart appears automatically once items are added, so don't promise to give it later. "
+    "If the user seems done, call "
+    "finish_shopping and say goodbye."
 )
 
 TOOLS = [
