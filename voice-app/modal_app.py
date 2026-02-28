@@ -50,6 +50,7 @@ SYSTEM_PROMPT = (
     "search for products and confirm prices before adding, unless the user is very confident and gives a list of items to add to the cart"
     ". In this case, immediately search for each item and select the most appropriate match to add to the cart for each. "
     "After adding items, check the response for failed_items and inform the user about any items that couldn't be added. "
+    "Users can also ask to remove items from their cart. Use remove_from_cart with the product codes of items to remove. "
     "IMPORTANT: Never read URLs, links, or web addresses aloud. "
     "Links to the cart and checkout appear automatically on the user's screen. "
     "If the user asks for a link, tell them it is already visible on their screen. "
@@ -116,6 +117,28 @@ TOOLS = [
                         "required": ["product_code", "quantity"],
                     },
                     "description": "Items to add with product code and quantity",
+                },
+            },
+            "required": ["items"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "remove_from_cart",
+        "description": "Remove items from the shopping cart. Returns removed_items (successfully removed) and failed_items (with reason).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "product_code": {"type": "string"},
+                        },
+                        "required": ["product_code"],
+                    },
+                    "description": "Items to remove by product code",
                 },
             },
             "required": ["items"],
@@ -455,6 +478,75 @@ def create_web_app():
         return {
             "success": success,
             "added_items": added_items,
+            "failed_items": failed_items,
+        }
+
+    @web_app.post("/api/remove-from-cart")
+    async def remove_from_cart(request: Request):
+        body = await request.json()
+        cart_id = body.get("cart_id")
+        store_id = body.get("store_id")
+        banner = body.get("banner", "superstore")
+        items = body.get("items", [])
+
+        print(f"[remove-from-cart] Removing {len(items)} item(s) from cart {cart_id} (banner={banner})")
+        for item in items:
+            print(f"[remove-from-cart]   {item['product_code']}")
+
+        # Setting quantity to 0 removes the item (SAP Hybris CartService behavior)
+        entries = {}
+        for item in items:
+            entries[item["product_code"]] = {
+                "quantity": 0,
+                "fulfillmentMethod": "pickup",
+                "sellerId": store_id,
+            }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{PCX_BASE}/carts/{cart_id}",
+                headers=pcx_headers(banner),
+                json={"entries": entries},
+            )
+        data = resp.json()
+        print(f"[remove-from-cart] HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            print(f"[remove-from-cart] Error response: {json.dumps(data, indent=2)}")
+
+        # Check which items are still in the cart after removal
+        remaining_codes = set()
+        cart_obj = data.get("cart", data)
+        for order in cart_obj.get("orders", []):
+            for entry in order.get("entries", []):
+                product = entry.get("offer", {}).get("product", {})
+                code = product.get("code") or product.get("id", "")
+                remaining_codes.add(code)
+
+        requested_codes = {item["product_code"] for item in items}
+        removed_items = []
+        failed_items = []
+        for item in items:
+            code = item["product_code"]
+            if code not in remaining_codes:
+                removed_items.append({"product_code": code})
+                print(f"[remove-from-cart]   OK removed {code}")
+            else:
+                failed_items.append({"product_code": code, "reason": "Item still in cart after removal attempt"})
+                print(f"[remove-from-cart]   FAIL {code}: still in cart")
+
+        # Also include any API-level errors
+        for err in data.get("errors", []):
+            reason = err.get("message", "Unknown error")
+            pc = err.get("productCode", "")
+            if pc and pc not in {f["product_code"] for f in failed_items}:
+                failed_items.append({"product_code": pc, "reason": reason})
+                print(f"[remove-from-cart]   FAIL {pc}: {reason}")
+
+        success = len(removed_items) > 0
+        print(f"[remove-from-cart] Result: {len(removed_items)} removed, {len(failed_items)} failed")
+        return {
+            "success": success,
+            "removed_items": removed_items,
             "failed_items": failed_items,
         }
 
