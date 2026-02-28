@@ -192,6 +192,18 @@ def create_web_app():
         query = body.get("location") or body.get("postal_code") or ""
         print(f'[find-stores] Received query: "{query}"')
 
+        # Canadian postal code: A1A 1A1 (letter-digit-letter space? digit-letter-digit)
+        CA_POSTAL_RE = re.compile(
+            r"^([A-Za-z]\d[A-Za-z])\s*(\d[A-Za-z]\d)$"
+        )
+
+        def normalize_postal(raw: str) -> str | None:
+            """If *raw* looks like a Canadian postal code, return it as 'A1A 1A1' (uppercase, single space)."""
+            m = CA_POSTAL_RE.match(raw.strip())
+            if not m:
+                return None
+            return f"{m.group(1).upper()} {m.group(2).upper()}"
+
         def normalize_address(addr: str) -> str:
             """Shorten verbose directionals for better Nominatim matching."""
             replacements = {
@@ -220,6 +232,31 @@ def create_web_app():
             print(f'[find-stores] Geocoded "{q}" -> {hit["lat"]}, {hit["lon"]} ({hit.get("display_name", "")})')
             return hit
 
+        async def geocode_postal_ca(postal: str, client: httpx.AsyncClient):
+            """Fallback geocoder for Canadian postal codes using geocoder.ca."""
+            compact = postal.replace(" ", "")
+            url = f"https://geocoder.ca/?postal={quote(compact)}&geoit=XML&json=1"
+            print(f'[find-stores] geocoder.ca fallback for postal code "{postal}"')
+            try:
+                resp = await client.get(url, headers={"User-Agent": "superstore-voice-app"})
+                if resp.status_code != 200:
+                    print(f"[find-stores] geocoder.ca HTTP {resp.status_code}")
+                    return None
+                data = resp.json()
+                if not data.get("latt") or not data.get("longt"):
+                    print(f"[find-stores] geocoder.ca returned no coordinates: {data}")
+                    return None
+                hit = {
+                    "lat": data["latt"],
+                    "lon": data["longt"],
+                    "display_name": f"{postal}, {data.get('standard', {}).get('city', '')}, {data.get('standard', {}).get('prov', '')}",
+                }
+                print(f'[find-stores] geocoder.ca resolved "{postal}" -> {hit["lat"]}, {hit["lon"]} ({hit["display_name"]})')
+                return hit
+            except Exception as e:
+                print(f"[find-stores] geocoder.ca error: {e}")
+                return None
+
         async def fetch_banner_locations(banner: str, client: httpx.AsyncClient):
             try:
                 resp = await client.get(
@@ -235,12 +272,21 @@ def create_web_app():
                 return []
 
         async with httpx.AsyncClient() as client:
+            # Normalize Canadian postal codes (e.g. "t2k 0a5" -> "T2K 0A5")
+            postal = normalize_postal(query)
+            if postal and postal != query:
+                print(f'[find-stores] Normalized postal code: "{query}" -> "{postal}"')
+                query = postal
+
             geo_hit = await geocode(query, client)
             if not geo_hit:
                 normalized = normalize_address(query)
                 if normalized != query:
                     print(f'[find-stores] Retrying with normalized address: "{normalized}"')
                     geo_hit = await geocode(normalized, client)
+            # Fallback: use geocoder.ca for Canadian postal codes
+            if not geo_hit and postal:
+                geo_hit = await geocode_postal_ca(postal, client)
             if not geo_hit:
                 print(f'[find-stores] FAILED to geocode "{query}"')
                 return JSONResponse(
