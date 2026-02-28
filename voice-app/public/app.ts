@@ -724,12 +724,17 @@ async function handleToolCall(event: any) {
     setCaption("Shopping complete!", "system");
   }
 
+  // Strip cart_url so the voice agent never sees raw URLs to read aloud.
+  // The frontend already captured cart_url for UI use above.
+  const sanitizedResult = { ...result };
+  delete sanitizedResult.cart_url;
+
   sendDataChannelMessage({
     type: "conversation.item.create",
     item: {
       type: "function_call_output",
       call_id,
-      output: JSON.stringify(result),
+      output: JSON.stringify(sanitizedResult),
     },
   });
   sendDataChannelMessage({
