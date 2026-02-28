@@ -382,9 +382,6 @@ function showCartLink() {
     const a = document.getElementById("cart-link-a") as HTMLAnchorElement;
     const baseUrl = state.cart_url || "https://www.realcanadiansuperstore.ca/en/cartReview";
     a.href = `${baseUrl}?forceCartId=${state.cart_id}`;
-    a.addEventListener("click", () => {
-      endSession();
-    }, { once: true });
   }
   cartLink.style.display = "block";
 }
@@ -704,11 +701,12 @@ async function handleToolCall(event: any) {
   }
 
   if (name === "add_to_cart" && !result.error) {
-    if (result.added_items) {
+    if (result.added_items && result.added_items.length > 0) {
       for (const item of result.added_items) {
         const displayName = state.productNames[item.product_code] || item.name || item.product_code;
         addCartItem(displayName, `x${item.quantity}`);
       }
+      showCartLink();
     }
   }
 
@@ -718,6 +716,10 @@ async function handleToolCall(event: any) {
       a.href = result.cart_url;
     }
     showCartLink();
+    const cartAnchor = document.getElementById("cart-link-a") as HTMLAnchorElement;
+    cartAnchor.addEventListener("click", () => {
+      endSession();
+    }, { once: true });
     addMessage("system", "Shopping complete! Review your cart on PC Express.");
     setCaption("Shopping complete!", "system");
   }
