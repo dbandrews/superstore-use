@@ -192,8 +192,20 @@ def create_web_app():
         query = body.get("location") or body.get("postal_code") or ""
         print(f'[find-stores] Received query: "{query}"')
 
+        # Canadian postal code: A1A 1A1 (letter-digit-letter space? digit-letter-digit)
+        CA_POSTAL_RE = re.compile(
+            r"^([A-Za-z]\d[A-Za-z])\s*(\d[A-Za-z]\d)$"
+        )
+
+        def normalize_postal(raw: str) -> str | None:
+            """If *raw* looks like a Canadian postal code, return it as 'A1A 1A1' (uppercase, single space)."""
+            m = CA_POSTAL_RE.match(raw.strip())
+            if not m:
+                return None
+            return f"{m.group(1).upper()} {m.group(2).upper()}"
+
         def normalize_address(addr: str) -> str:
-            """Shorten verbose directionals for better Nominatim matching."""
+            """Shorten verbose directionals for better geocoding matches."""
             replacements = {
                 r"\bNorthwest\b": "NW",
                 r"\bNortheast\b": "NE",
@@ -205,19 +217,27 @@ def create_web_app():
             return addr
 
         async def geocode(q: str, client: httpx.AsyncClient):
-            url = f"https://nominatim.openstreetmap.org/search?q={quote(q)}&countrycodes=ca&format=json&limit=1"
-            print(f'[find-stores] Nominatim request: "{q}" url={url}')
-            resp = await client.get(url, headers={"User-Agent": "superstore-voice-app"})
-            print(f"[find-stores] Nominatim HTTP {resp.status_code}, body length={len(resp.text)}")
+            mapbox_token = os.environ.get("MAPBOX_API_KEY", "")
+            url = (
+                f"https://api.mapbox.com/search/geocode/v6/forward"
+                f"?q={quote(q)}&country=ca&limit=1&access_token={mapbox_token}"
+            )
+            print(f'[find-stores] Mapbox geocode request: "{q}"')
+            resp = await client.get(url)
+            print(f"[find-stores] Mapbox HTTP {resp.status_code}, body length={len(resp.text)}")
             if resp.status_code != 200:
-                print(f"[find-stores] Nominatim error response: {resp.text[:500]}")
+                print(f"[find-stores] Mapbox error response: {resp.text[:500]}")
                 return None
             data = resp.json()
-            if not data:
-                print(f'[find-stores] Nominatim returned empty results for "{q}"')
+            features = data.get("features", [])
+            if not features:
+                print(f'[find-stores] Mapbox returned no features for "{q}"')
                 return None
-            hit = data[0]
-            print(f'[find-stores] Geocoded "{q}" -> {hit["lat"]}, {hit["lon"]} ({hit.get("display_name", "")})')
+            feat = features[0]
+            coords = feat["geometry"]["coordinates"]  # [lon, lat]
+            display = feat.get("properties", {}).get("full_address") or feat.get("properties", {}).get("name", "")
+            hit = {"lat": str(coords[1]), "lon": str(coords[0]), "display_name": display}
+            print(f'[find-stores] Geocoded "{q}" -> {hit["lat"]}, {hit["lon"]} ({hit["display_name"]})')
             return hit
 
         async def fetch_banner_locations(banner: str, client: httpx.AsyncClient):
@@ -235,6 +255,12 @@ def create_web_app():
                 return []
 
         async with httpx.AsyncClient() as client:
+            # Normalize Canadian postal codes (e.g. "t2k 0a5" -> "T2K 0A5")
+            postal = normalize_postal(query)
+            if postal and postal != query:
+                print(f'[find-stores] Normalized postal code: "{query}" -> "{postal}"')
+                query = postal
+
             geo_hit = await geocode(query, client)
             if not geo_hit:
                 normalized = normalize_address(query)
@@ -445,7 +471,7 @@ def create_web_app():
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("openai-secret")],
+    secrets=[modal.Secret.from_name("openai-secret"), modal.Secret.from_name("mapbox-api-key")],
     timeout=3600,
     cpu=0.25,
     memory=256,
