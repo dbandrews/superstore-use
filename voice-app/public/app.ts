@@ -713,6 +713,10 @@ async function handleToolCall(event: any) {
   }
 
   if (name === "finish_shopping") {
+    if (result.cart_url) {
+      const a = document.getElementById("cart-link-a") as HTMLAnchorElement;
+      a.href = result.cart_url;
+    }
     showCartLink();
     addMessage("system", "Shopping complete! Review your cart on PC Express.");
     setCaption("Shopping complete!", "system");
