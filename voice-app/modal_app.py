@@ -9,10 +9,8 @@ image = (
 app = modal.App("pc-express-voice")
 
 PCX_BASE = "https://api.pcexpress.ca/pcx-bff/api/v1"
-PCX_HEADERS = {
+PCX_BASE_HEADERS = {
     "x-apikey": "C1xujSegT5j3ap3yexJjqhOfELwGKYvz",
-    "basesiteid": "superstore",
-    "site-banner": "superstore",
     "x-loblaw-tenant-id": "ONLINE_GROCERIES",
     "x-channel": "web",
     "x-application-type": "web",
@@ -21,11 +19,32 @@ PCX_HEADERS = {
     "content-type": "application/json",
 }
 
+BANNERS = {
+    "superstore": {"name": "Real Canadian Superstore", "cart_url": "https://www.realcanadiansuperstore.ca/en/cartReview"},
+    "nofrills": {"name": "No Frills", "cart_url": "https://www.nofrills.ca/en/cartReview"},
+    "loblaw": {"name": "Loblaws", "cart_url": "https://www.loblaws.ca/en/cartReview"},
+    "independent": {"name": "Your Independent Grocer", "cart_url": "https://www.yourindependentgrocer.ca/en/cartReview"},
+    "zehrs": {"name": "Zehrs", "cart_url": "https://www.zehrs.ca/en/cartReview"},
+    "fortinos": {"name": "Fortinos", "cart_url": "https://www.fortinos.ca/en/cartReview"},
+    "maxi": {"name": "Maxi", "cart_url": "https://www.maxi.ca/en/cartReview"},
+    "provigo": {"name": "Provigo", "cart_url": "https://www.provigo.ca/en/cartReview"},
+    "dominion": {"name": "Dominion", "cart_url": "https://www.dominion.ca/en/cartReview"},
+    "wholesaleclub": {"name": "Wholesale Club", "cart_url": "https://www.wholesaleclub.ca/en/cartReview"},
+    "valumart": {"name": "Valu-Mart", "cart_url": "https://www.valumart.ca/en/cartReview"},
+    "extrafoods": {"name": "Extra Foods", "cart_url": "https://www.extrafoods.ca/en/cartReview"},
+}
+
+
+def pcx_headers(banner: str = "superstore") -> dict:
+    return {**PCX_BASE_HEADERS, "basesiteid": banner, "site-banner": banner}
+
 SYSTEM_PROMPT = (
     "You are a friendly grocery shopping assistant for PC Express. "
     "Help users shop by voice. Start by asking where they're located - they can give "
     "you their address, neighbourhood, city, or postal code. Use whatever they give you "
-    "to find the nearest PC Express pickup locations. Present the top 3 and let them pick one. Then "
+    "to find the nearest PC Express pickup locations across all Loblaw banners "
+    "(Superstore, No Frills, Loblaws, Independent, Zehrs, Fortinos, Maxi, Provigo, etc.). "
+    "Present the top 3 closest stores and let them pick one. Then "
     "help them brainstorm simple recipes and build a shopping list. Keep responses concise "
     "since this is a voice conversation - avoid reading long lists. When adding items, "
     "search for products and confirm prices before adding, unless the user is very confident and gives a list of items to add to the cart"
@@ -55,13 +74,14 @@ TOOLS = [
     {
         "type": "function",
         "name": "select_store",
-        "description": "Select a store and create a shopping cart for it",
+        "description": "Select a store and create a shopping cart for it. Use the store_id and banner from find_nearest_stores results.",
         "parameters": {
             "type": "object",
             "properties": {
                 "store_id": {"type": "string", "description": "The store ID to shop at"},
+                "banner": {"type": "string", "description": "The banner ID of the store (e.g. superstore, nofrills, loblaw)"},
             },
-            "required": ["store_id"],
+            "required": ["store_id", "banner"],
         },
     },
     {
@@ -166,6 +186,8 @@ def create_web_app():
 
     @web_app.post("/api/find-stores")
     async def find_stores(request: Request):
+        import asyncio
+
         body = await request.json()
         query = body.get("location") or body.get("postal_code") or ""
         print(f'[find-stores] Received query: "{query}"')
@@ -198,6 +220,20 @@ def create_web_app():
             print(f'[find-stores] Geocoded "{q}" -> {hit["lat"]}, {hit["lon"]} ({hit.get("display_name", "")})')
             return hit
 
+        async def fetch_banner_locations(banner: str, client: httpx.AsyncClient):
+            try:
+                resp = await client.get(
+                    f"{PCX_BASE}/pickup-locations?bannerIds={banner}",
+                    headers=pcx_headers(banner),
+                )
+                data = resp.json()
+                locs = data if isinstance(data, list) else data.get("pickupLocations", [])
+                print(f"[find-stores] {banner}: {len(locs)} locations")
+                return locs
+            except Exception as e:
+                print(f"[find-stores] {banner}: error fetching locations: {e}")
+                return []
+
         async with httpx.AsyncClient() as client:
             geo_hit = await geocode(query, client)
             if not geo_hit:
@@ -214,17 +250,16 @@ def create_web_app():
             lat = float(geo_hit["lat"])
             lng = float(geo_hit["lon"])
 
-            loc_resp = await client.get(
-                f"{PCX_BASE}/pickup-locations?bannerIds=superstore",
-                headers=PCX_HEADERS,
-            )
-            loc_data = loc_resp.json()
-
-        if isinstance(loc_data, list):
-            locations = loc_data
-        else:
-            locations = loc_data.get("pickupLocations", [])
-        print(f"[find-stores] PCX pickup-locations HTTP {loc_resp.status_code}, {len(locations)} locations")
+            # Query all banners in parallel
+            banner_tasks = {
+                banner: fetch_banner_locations(banner, client)
+                for banner in BANNERS
+            }
+            results = await asyncio.gather(*banner_tasks.values())
+            all_locations = []
+            for locs in results:
+                all_locations.extend(locs)
+            print(f"[find-stores] Total locations across all banners: {len(all_locations)}")
 
         def distance(loc):
             gp = loc.get("geoPoint", {})
@@ -238,51 +273,56 @@ def create_web_app():
             )
             return 6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-        sorted_locs = sorted(locations, key=distance)
+        sorted_locs = sorted(all_locations, key=distance)
         top3 = [
             {
                 "storeId": loc.get("storeId"),
                 "name": loc.get("name"),
+                "banner": loc.get("storeBannerId", "superstore"),
+                "bannerName": loc.get("storeBannerName", ""),
                 "address": (loc.get("address") or {}).get("formattedAddress", ""),
                 "distance_km": round(distance(loc) * 10) / 10,
             }
             for loc in sorted_locs[:3]
         ]
         for s in top3:
-            print(f"[find-stores]   #{s['storeId']} {s['name']} — {s['distance_km']}km — {s['address']}")
+            print(f"[find-stores]   #{s['storeId']} [{s['banner']}] {s['name']} — {s['distance_km']}km — {s['address']}")
         return {"stores": top3}
 
     @web_app.post("/api/create-cart")
     async def create_cart(request: Request):
         body = await request.json()
         store_id = body.get("store_id")
-        print(f"[create-cart] Creating cart for store_id={store_id}")
+        banner = body.get("banner", "superstore")
+        print(f"[create-cart] Creating cart for store_id={store_id}, banner={banner}")
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{PCX_BASE}/carts",
-                headers=PCX_HEADERS,
-                json={"bannerId": "superstore", "language": "en", "storeId": store_id},
+                headers=pcx_headers(banner),
+                json={"bannerId": banner, "language": "en", "storeId": store_id},
             )
         data = resp.json()
         cart_id = data.get("cartId") or data.get("id")
+        cart_url = BANNERS.get(banner, BANNERS["superstore"])["cart_url"]
         print(f"[create-cart] HTTP {resp.status_code}, cart_id={cart_id}")
         if resp.status_code != 200:
             print(f"[create-cart] Error response: {json.dumps(data, indent=2)}")
-        return {"cart_id": cart_id}
+        return {"cart_id": cart_id, "banner": banner, "cart_url": cart_url}
 
     @web_app.post("/api/search-products")
     async def search_products(request: Request):
         body = await request.json()
         term = body.get("term")
         store_id = body.get("store_id")
-        print(f'[search] Searching "{term}" at store {store_id}')
+        banner = body.get("banner", "superstore")
+        print(f'[search] Searching "{term}" at store {store_id} (banner={banner})')
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{PCX_BASE}/products/search",
-                headers=PCX_HEADERS,
+                headers=pcx_headers(banner),
                 json={
                     "term": term,
-                    "banner": "superstore",
+                    "banner": banner,
                     "storeId": store_id,
                     "lang": "en",
                     "cartId": body.get("cart_id"),
@@ -319,9 +359,10 @@ def create_web_app():
         body = await request.json()
         cart_id = body.get("cart_id")
         store_id = body.get("store_id")
+        banner = body.get("banner", "superstore")
         items = body.get("items", [])
 
-        print(f"[add-to-cart] Adding {len(items)} item(s) to cart {cart_id} at store {store_id}")
+        print(f"[add-to-cart] Adding {len(items)} item(s) to cart {cart_id} at store {store_id} (banner={banner})")
         for item in items:
             print(f"[add-to-cart]   {item['product_code']} x{item['quantity']}")
 
@@ -336,7 +377,7 @@ def create_web_app():
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{PCX_BASE}/carts/{cart_id}",
-                headers=PCX_HEADERS,
+                headers=pcx_headers(banner),
                 json={"entries": entries},
             )
         data = resp.json()
