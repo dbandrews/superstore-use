@@ -363,9 +363,10 @@ function addMessage(role: "assistant" | "user" | "system", text: string): HTMLEl
 }
 
 // ─── Cart ───
-function addCartItem(name: string, qty?: string) {
+function addCartItem(name: string, qty?: string, productCode?: string) {
   cartSection.classList.add("active");
   const li = document.createElement("li");
+  if (productCode) li.dataset.productCode = productCode;
   const nameSpan = document.createElement("span");
   nameSpan.textContent = name;
   li.appendChild(nameSpan);
@@ -375,6 +376,19 @@ function addCartItem(name: string, qty?: string) {
     li.appendChild(qtySpan);
   }
   cartItems.appendChild(li);
+}
+
+function removeCartItem(productCode: string) {
+  const items = cartItems.querySelectorAll("li");
+  for (const li of items) {
+    if ((li as HTMLElement).dataset.productCode === productCode) {
+      li.remove();
+      break;
+    }
+  }
+  if (cartItems.children.length === 0) {
+    cartSection.classList.remove("active");
+  }
 }
 
 function showCartLink() {
@@ -704,9 +718,17 @@ async function handleToolCall(event: any) {
     if (result.added_items && result.added_items.length > 0) {
       for (const item of result.added_items) {
         const displayName = state.productNames[item.product_code] || item.name || item.product_code;
-        addCartItem(displayName, `x${item.quantity}`);
+        addCartItem(displayName, `x${item.quantity}`, item.product_code);
       }
       showCartLink();
+    }
+  }
+
+  if (name === "remove_from_cart" && !result.error) {
+    if (result.removed_items && result.removed_items.length > 0) {
+      for (const item of result.removed_items) {
+        removeCartItem(item.product_code);
+      }
     }
   }
 
@@ -752,6 +774,7 @@ async function callBackend(fnName: string, args: any): Promise<any> {
     select_store: "/api/create-cart",
     search_products: "/api/search-products",
     add_to_cart: "/api/add-to-cart",
+    remove_from_cart: "/api/remove-from-cart",
     finish_shopping: "/api/finish-shopping",
   };
   const endpoint = endpointMap[fnName];
