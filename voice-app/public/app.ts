@@ -38,6 +38,8 @@ interface AppState {
   localStream: MediaStream | null;
   cart_id: string | null;
   store_id: string | null;
+  banner: string | null;
+  cart_url: string | null;
   currentAssistantMsg: string;
   currentResponseId: string | null;
   productNames: Record<string, string>;
@@ -65,6 +67,8 @@ const state: AppState = {
   localStream: null,
   cart_id: null,
   store_id: null,
+  banner: null,
+  cart_url: null,
   currentAssistantMsg: "",
   currentResponseId: null,
   productNames: {},
@@ -376,7 +380,8 @@ function addCartItem(name: string, qty?: string) {
 function showCartLink() {
   if (state.cart_id) {
     const a = document.getElementById("cart-link-a") as HTMLAnchorElement;
-    a.href = `https://www.realcanadiansuperstore.ca/en/cartReview?forceCartId=${state.cart_id}`;
+    const baseUrl = state.cart_url || "https://www.realcanadiansuperstore.ca/en/cartReview";
+    a.href = `${baseUrl}?forceCartId=${state.cart_id}`;
     a.addEventListener("click", () => {
       endSession();
     }, { once: true });
@@ -684,6 +689,8 @@ async function handleToolCall(event: any) {
   if (name === "select_store" && result.cart_id) {
     state.cart_id = result.cart_id;
     state.store_id = args.store_id || result.store_id;
+    state.banner = result.banner || args.banner || "superstore";
+    state.cart_url = result.cart_url || null;
     addMessage("system", "Store selected, cart created.");
     setCaption("Store selected, cart created.", "system");
   }
@@ -743,6 +750,7 @@ async function callBackend(fnName: string, args: any): Promise<any> {
   const body: any = { ...args };
   if (state.cart_id && !body.cart_id) body.cart_id = state.cart_id;
   if (state.store_id && !body.store_id) body.store_id = state.store_id;
+  if (state.banner && !body.banner) body.banner = state.banner;
 
   const res = await fetch(endpoint, {
     method: "POST",
