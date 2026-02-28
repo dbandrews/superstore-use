@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // PC Express Voice — app.ts
-// Voice-reactive iridescent orb + live caption + collapsible transcript
+// Voice-reactive soft glow orb + live caption + collapsible transcript
 // ═══════════════════════════════════════════════════════════════
 
 // ─── Constants ───
@@ -112,7 +112,7 @@ stopBtn.addEventListener("click", endSession);
 transcriptToggle.addEventListener("click", toggleTranscript);
 
 // ═══════════════════════════════════════════════════════════════
-// WebGL Iridescent Orb
+// WebGL Soft Glow Orb (SDF circle + Fresnel rim)
 // ═══════════════════════════════════════════════════════════════
 
 const VERT_SRC = `
@@ -135,14 +135,25 @@ varying vec2 vUv;
 void main() {
   float mr = min(uResolution.x, uResolution.y);
   vec2 uv = (vUv * 2.0 - 1.0) * uResolution.xy / mr;
-  float d = -uTime * 0.5 * uSpeed;
-  float a = 0.0;
-  for (float i = 0.0; i < 8.0; ++i) {
-    a += cos(i - d - a * uv.x);
-    d += sin(uv.y * i + a);
-  }
-  vec3 col = vec3(cos(uv * vec2(d, a)) * 0.6 + 0.4, cos(a + d) * 0.5 + 0.5);
-  col = cos(col * cos(vec3(d, a, 2.5)) * 0.5 + 0.5) * uColor;
+  float dist = length(uv);
+
+  // Soft disc fill — fades from center outward
+  float fill = smoothstep(1.0, 0.4, dist);
+
+  // Fresnel rim — bright at edges, fades inward (glass-marble look)
+  float rim = pow(smoothstep(0.3, 1.0, dist), 2.0) * smoothstep(1.2, 0.95, dist);
+  float rimStrength = 0.3 + uAmplitude * 3.0;
+
+  // Subtle inner movement — slow radial swirl
+  float swirl = sin(uTime * uSpeed * 0.5 + dist * 4.0) * 0.05;
+
+  vec3 col = uColor * fill * (0.6 + swirl)
+           + uColor * rim * rimStrength * (1.2 + sin(uTime * 0.8) * 0.1);
+
+  // Outer glow falloff beyond the disc
+  float outerGlow = (1.0 / (dist * dist + 0.01)) * 0.005 * (0.5 + uAmplitude * 2.0);
+  col += uColor * outerGlow;
+
   gl_FragColor = vec4(col, 1.0);
 }`;
 
@@ -241,15 +252,15 @@ function renderOrbFrame(time: number) {
 
   const level = state.smoothedAudioLevel;
 
-  // Orb always uses the "thinking" blue color
-  const target = STATE_COLORS.thinking;
+  // Orb color tracks the current status
+  const target = STATE_COLORS[state.currentStatus] || STATE_COLORS.disconnected;
   for (let i = 0; i < 3; i++) {
     state.orbColor[i] += (target[i] - state.orbColor[i]) * 0.035;
   }
 
-  // Audio-reactive uniforms
-  const amplitude = 0.05 + level * 0.14;
-  const speed = 0.15 + level * 0.16;
+  // Audio-reactive uniforms (wider range to drive Fresnel rim)
+  const amplitude = 0.05 + level * 0.25;
+  const speed = 0.1 + level * 0.2;
 
   // Render WebGL
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -280,8 +291,8 @@ function renderOrbFrame(time: number) {
   orbGlow.style.background = `rgba(${r}, ${g}, ${b}, ${glowOpacity})`;
   orbClip.style.boxShadow = `0 0 ${60 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.1})`;
 
-  // Scale orb with audio
-  const scale = 1 + level * 0.43;
+  // Subtle breathing scale (Fresnel rim provides most of the visual reactivity)
+  const scale = 1 + level * 0.15;
   orbClip.style.transform = `scale(${scale})`;
 
   state.orbAnimId = requestAnimationFrame(renderOrbFrame);
