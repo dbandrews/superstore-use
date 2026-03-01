@@ -273,11 +273,15 @@ function renderOrbFrame(time: number) {
     state.orbColor[i] += (target[i] - state.orbColor[i]) * 0.035;
   }
 
+  // Speaking state — keep orb animated the entire time the agent is speaking,
+  // even during brief pauses between words/sentences.
+  const isSpeaking = state.currentStatus === "speaking";
+  const speakingBoost = isSpeaking ? 0.08 : 0;
+
   // Audio-reactive amplitude (drives FBM detail + rim brightness)
-  const amplitude = 0.05 + level * 0.15;
+  const amplitude = 0.05 + speakingBoost + level * 0.15;
 
   // Smooth continuous rotation — always spins in one direction, faster when speaking
-  const isSpeaking = state.currentStatus === "speaking" && level > 0.01;
   const targetSpinSpeed = isSpeaking ? 0.3 + level * 0.5 : 0.03; // radians/sec
   state.spinSpeed += (targetSpinSpeed - state.spinSpeed) * 0.02;
   state.spinAngle = (state.spinAngle + state.spinSpeed / 60) % (Math.PI * 200);
@@ -307,12 +311,12 @@ function renderOrbFrame(time: number) {
   const r = Math.round(c[0] * 255);
   const g = Math.round(c[1] * 255);
   const b = Math.round(c[2] * 255);
-  const glowOpacity = 0.14 + level * 1.2;
+  const glowOpacity = 0.14 + speakingBoost * 2.5 + level * 1.2;
   orbGlow.style.background = `rgba(${r}, ${g}, ${b}, ${glowOpacity})`;
-  orbClip.style.boxShadow = `0 0 ${60 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.1})`;
+  orbClip.style.boxShadow = `0 0 ${60 + speakingBoost * 80 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + speakingBoost * 0.08 + level * 0.1})`;
 
   // Subtle breathing scale — shader handles all rotation
-  const scale = 1 + level * 0.08;
+  const scale = 1 + speakingBoost * 0.5 + level * 0.08;
   orbClip.style.transform = `scale(${scale})`;
 
   state.orbAnimId = requestAnimationFrame(renderOrbFrame);
