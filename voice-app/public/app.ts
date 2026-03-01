@@ -7,13 +7,10 @@
 const REALTIME_MODEL = "gpt-realtime-mini";
 const REALTIME_URL = `https://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`;
 
-// Orb color per status — [r, g, b] floats 0-1
+// Orb color — two states only (Realtime API is always listening)
 const STATE_COLORS: Record<string, number[]> = {
-  connecting: [0.94, 0.63, 0.19],
-  listening: [0.20, 0.82, 0.41],
-  speaking: [0.88, 0.24, 0.24],
-  thinking: [0.29, 0.56, 0.96],
-  disconnected: [0.35, 0.38, 0.50],
+  active:       [0.29, 0.56, 0.96],  // blue
+  disconnected: [0.35, 0.38, 0.50],  // muted gray
 };
 
 // ─── State ───
@@ -112,7 +109,7 @@ stopBtn.addEventListener("click", endSession);
 transcriptToggle.addEventListener("click", toggleTranscript);
 
 // ═══════════════════════════════════════════════════════════════
-// WebGL Soft Glow Orb (SDF circle + Fresnel rim)
+// WebGL Nebula Bloom Orb (FBM noise cloud)
 // ═══════════════════════════════════════════════════════════════
 
 const VERT_SRC = `
@@ -132,29 +129,39 @@ uniform vec3 uResolution;
 uniform float uAmplitude;
 uniform float uSpeed;
 varying vec2 vUv;
+
+float noise(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float smoothNoise(vec2 p) {
+  vec2 i = floor(p); vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = noise(i), b = noise(i + vec2(1,0));
+  float c = noise(i + vec2(0,1)), d = noise(i + vec2(1,1));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+
+float fbm(vec2 p) {
+  return smoothNoise(p*2.0)*0.5 + smoothNoise(p*4.0+1.3)*0.25 + smoothNoise(p*8.0+2.7)*0.125;
+}
+
 void main() {
   float mr = min(uResolution.x, uResolution.y);
   vec2 uv = (vUv * 2.0 - 1.0) * uResolution.xy / mr;
   float dist = length(uv);
+  float mask = smoothstep(1.0, 0.7, dist);
 
-  // Soft disc fill — fades from center outward
-  float fill = smoothstep(1.0, 0.4, dist);
+  float t = uTime * uSpeed * 0.3;
+  float n = fbm(uv * (1.5 + uAmplitude * 3.0) + vec2(t, t * 0.7));
 
-  // Fresnel rim — bright at edges, fades inward (glass-marble look)
-  float rim = pow(smoothstep(0.3, 1.0, dist), 2.0) * smoothstep(1.2, 0.95, dist);
-  float rimStrength = 0.3 + uAmplitude * 3.0;
+  vec3 col = mix(uColor, uColor * vec3(0.7, 1.1, 1.3), n) * (0.5 + n * 0.8 + uAmplitude * 0.5);
 
-  // Subtle inner movement — slow radial swirl
-  float swirl = sin(uTime * uSpeed * 0.5 + dist * 4.0) * 0.05;
+  // Fresnel rim
+  float rim = pow(smoothstep(0.3, 0.95, dist), 3.0) * smoothstep(1.1, 0.95, dist);
+  col += uColor * rim * (0.2 + uAmplitude * 0.6);
 
-  vec3 col = uColor * fill * (0.6 + swirl)
-           + uColor * rim * rimStrength * (1.2 + sin(uTime * 0.8) * 0.1);
-
-  // Outer glow falloff beyond the disc
-  float outerGlow = (1.0 / (dist * dist + 0.01)) * 0.005 * (0.5 + uAmplitude * 2.0);
-  col += uColor * outerGlow;
-
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(col * mask, 1.0);
 }`;
 
 function compileShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null {
@@ -252,15 +259,16 @@ function renderOrbFrame(time: number) {
 
   const level = state.smoothedAudioLevel;
 
-  // Orb color tracks the current status
-  const target = STATE_COLORS[state.currentStatus] || STATE_COLORS.disconnected;
+  // Orb color: active (blue) vs disconnected (gray)
+  const orbKey = state.currentStatus === "disconnected" ? "disconnected" : "active";
+  const target = STATE_COLORS[orbKey];
   for (let i = 0; i < 3; i++) {
     state.orbColor[i] += (target[i] - state.orbColor[i]) * 0.035;
   }
 
-  // Audio-reactive uniforms (wider range to drive Fresnel rim)
-  const amplitude = 0.05 + level * 0.25;
-  const speed = 0.1 + level * 0.2;
+  // Audio-reactive uniforms (drives FBM turbulence + rim brightness)
+  const amplitude = 0.05 + level * 0.20;
+  const speed = 0.2 + level * 0.4;
 
   // Render WebGL
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -291,8 +299,8 @@ function renderOrbFrame(time: number) {
   orbGlow.style.background = `rgba(${r}, ${g}, ${b}, ${glowOpacity})`;
   orbClip.style.boxShadow = `0 0 ${60 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.1})`;
 
-  // Subtle breathing scale (Fresnel rim provides most of the visual reactivity)
-  const scale = 1 + level * 0.15;
+  // Breathing scale (FBM turbulence provides most of the visual reactivity)
+  const scale = 1 + level * 0.20;
   orbClip.style.transform = `scale(${scale})`;
 
   state.orbAnimId = requestAnimationFrame(renderOrbFrame);
