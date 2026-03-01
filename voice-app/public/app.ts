@@ -51,6 +51,8 @@ interface AppState {
   orbColor: number[];
   orbAnimId: number | null;
   orbGL: OrbGL | null;
+  spinAngle: number;
+  spinSpeed: number;
   // Caption
   captionTimeout: ReturnType<typeof setTimeout> | null;
   // Transcript
@@ -80,6 +82,8 @@ const state: AppState = {
   orbColor: [0.35, 0.38, 0.50],
   orbAnimId: null,
   orbGL: null,
+  spinAngle: 0,
+  spinSpeed: 0,
   // Caption
   captionTimeout: null,
   // Transcript
@@ -299,9 +303,16 @@ function renderOrbFrame(time: number) {
   orbGlow.style.background = `rgba(${r}, ${g}, ${b}, ${glowOpacity})`;
   orbClip.style.boxShadow = `0 0 ${60 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.1})`;
 
+  // Spin: ramp up when speaking, decelerate when not
+  const isSpeaking = state.currentStatus === "speaking" && level > 0.01;
+  const targetSpin = isSpeaking ? 30 + level * 60 : 0; // degrees per second
+  const spinLerp = isSpeaking ? 0.03 : 0.015; // faster ramp-up, gentler slow-down
+  state.spinSpeed += (targetSpin - state.spinSpeed) * spinLerp;
+  state.spinAngle = (state.spinAngle + state.spinSpeed / 60) % 360;
+
   // Breathing scale (FBM turbulence provides most of the visual reactivity)
   const scale = 1 + level * 0.20;
-  orbClip.style.transform = `scale(${scale})`;
+  orbClip.style.transform = `scale(${scale}) rotate(${state.spinAngle.toFixed(1)}deg)`;
 
   state.orbAnimId = requestAnimationFrame(renderOrbFrame);
 }
