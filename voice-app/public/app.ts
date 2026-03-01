@@ -525,7 +525,7 @@ async function startSession() {
         item: {
           type: "message",
           role: "system",
-          content: [{ type: "input_text", text: "Greet the user warmly and briefly tell them what you can help them with." }],
+          content: [{ type: "input_text", text: "Greet the user warmly. Briefly tell them you can help come up with recipe ideas and manage their cart on PC Express. Keep it short and don't ask for their location yet." }],
         },
       });
       sendDataChannelMessage({ type: "response.create" });
