@@ -156,8 +156,11 @@ void main() {
   float dist = length(uv);
   float mask = smoothstep(1.0, 0.7, dist);
 
-  float t = uTime * uSpeed * 0.3;
-  float n = fbm(uv * (1.5 + uAmplitude * 3.0) + vec2(t, t * 0.7));
+  // Polar rotation — uSpeed is the accumulated angle (radians).
+  // Rotates the noise pattern smoothly in one direction.
+  float angle = atan(uv.y, uv.x) + uSpeed;
+  vec2 rotUv = vec2(dist * cos(angle), dist * sin(angle));
+  float n = fbm(rotUv * (1.5 + uAmplitude * 1.5));
 
   vec3 col = mix(uColor, uColor * vec3(0.7, 1.1, 1.3), n) * (0.5 + n * 0.8 + uAmplitude * 0.5);
 
@@ -270,9 +273,14 @@ function renderOrbFrame(time: number) {
     state.orbColor[i] += (target[i] - state.orbColor[i]) * 0.035;
   }
 
-  // Audio-reactive uniforms (drives FBM turbulence + rim brightness)
-  const amplitude = 0.05 + level * 0.20;
-  const speed = 0.2 + level * 0.4;
+  // Audio-reactive amplitude (drives FBM detail + rim brightness)
+  const amplitude = 0.05 + level * 0.15;
+
+  // Smooth continuous rotation — always spins in one direction, faster when speaking
+  const isSpeaking = state.currentStatus === "speaking" && level > 0.01;
+  const targetSpinSpeed = isSpeaking ? 0.3 + level * 0.5 : 0.03; // radians/sec
+  state.spinSpeed += (targetSpinSpeed - state.spinSpeed) * 0.02;
+  state.spinAngle = (state.spinAngle + state.spinSpeed / 60) % (Math.PI * 200);
 
   // Render WebGL
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -290,7 +298,7 @@ function renderOrbFrame(time: number) {
   gl.uniform3f(o.uColor, state.orbColor[0], state.orbColor[1], state.orbColor[2]);
   gl.uniform3f(o.uResolution, gl.canvas.width, gl.canvas.height, gl.canvas.width / gl.canvas.height);
   gl.uniform1f(o.uAmplitude, amplitude);
-  gl.uniform1f(o.uSpeed, speed);
+  gl.uniform1f(o.uSpeed, state.spinAngle);
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -303,16 +311,9 @@ function renderOrbFrame(time: number) {
   orbGlow.style.background = `rgba(${r}, ${g}, ${b}, ${glowOpacity})`;
   orbClip.style.boxShadow = `0 0 ${60 + level * 15}px rgba(${r}, ${g}, ${b}, ${0.2 + level * 0.1})`;
 
-  // Spin: ramp up when speaking, decelerate when not
-  const isSpeaking = state.currentStatus === "speaking" && level > 0.01;
-  const targetSpin = isSpeaking ? 30 + level * 60 : 0; // degrees per second
-  const spinLerp = isSpeaking ? 0.03 : 0.015; // faster ramp-up, gentler slow-down
-  state.spinSpeed += (targetSpin - state.spinSpeed) * spinLerp;
-  state.spinAngle = (state.spinAngle + state.spinSpeed / 60) % 360;
-
-  // Breathing scale (FBM turbulence provides most of the visual reactivity)
-  const scale = 1 + level * 0.20;
-  orbClip.style.transform = `scale(${scale}) rotate(${state.spinAngle.toFixed(1)}deg)`;
+  // Subtle breathing scale — shader handles all rotation
+  const scale = 1 + level * 0.08;
+  orbClip.style.transform = `scale(${scale})`;
 
   state.orbAnimId = requestAnimationFrame(renderOrbFrame);
 }
